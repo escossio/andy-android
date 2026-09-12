@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 import re
 import unittest
@@ -12,7 +13,53 @@ def policy():
                 forbidden_content_patterns=['retrofit'])
 
 
+DEVICE_IDENTITY_ALLOWED_PATHS = {
+    'settings.gradle.kts',
+    'build.gradle.kts',
+    'gradle/libs.versions.toml',
+    'app/build.gradle.kts',
+    'app/src/main/java/io/github/escossio/andy/MainActivity.kt',
+    'core/device-identity/build.gradle.kts',
+    'core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentity.kt',
+    'core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngine.kt',
+    'core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngineTest.kt',
+    'core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceKeyFingerprintTest.kt',
+    'data/device-identity/build.gradle.kts',
+    'data/device-identity/src/main/AndroidManifest.xml',
+    'data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityFactory.kt',
+    'data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidKeystoreDeviceIdentityCrypto.kt',
+    'data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/NoBackupDeviceIdentityMetadataRepository.kt',
+    'data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt',
+}
+
+
+def device_identity_manifest():
+    path = Path(__file__).resolve().parents[2] / '.github/architecture/frontiers/android-device-identity-v1.json'
+    return json.loads(path.read_text())
+
+
 class GuardPolicyTests(unittest.TestCase):
+    def test_device_identity_frontier_rejects_unlisted_paths(self):
+        manifest = device_identity_manifest()
+        errors = evaluate_frontier(manifest, ['README.md'], {})
+        self.assertIn('ARCH_GOVERNANCE_MUTATION:README.md', errors)
+
+    def test_device_identity_frontier_is_exact(self):
+        manifest = device_identity_manifest()
+        self.assertEqual(manifest['schema_version'], 1)
+        self.assertEqual(manifest['frontier_id'], 'android-device-identity-v1')
+        self.assertEqual(manifest['branch'], 'feat/android-device-identity-v1')
+        self.assertEqual(set(manifest['allowed_paths']), DEVICE_IDENTITY_ALLOWED_PATHS)
+        self.assertEqual(set(manifest['required_artifacts']), DEVICE_IDENTITY_ALLOWED_PATHS)
+        for forbidden in (
+            'retrofit', 'okhttp', 'ktor-client', 'dagger', 'hilt',
+            'androidx\\.room', 'firebase', 'com\\.google\\.android\\.gms',
+            'androidx\\.work', 'play-services-location', 'home.?assistant',
+            'whatsapp', 'android\\.permission\\.INTERNET',
+        ):
+            self.assertIn(forbidden, manifest['forbidden_content_patterns'])
+        self.assertEqual(validate_manifest(manifest), [])
+
     def workflow(self):
         return (Path(__file__).resolve().parents[2] / '.github/workflows/governance.yml').read_text()
 
