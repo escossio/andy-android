@@ -26,7 +26,7 @@ Create the smallest real Android application that is worth keeping:
 - application ID `io.github.escossio.andy`;
 - one launcher `MainActivity`;
 - one screen containing only the text **Andy**, centered;
-- one minimal unit test;
+- one minimal JVM unit test;
 - deterministic Gradle wrapper/toolchain;
 - CI build proof;
 - independent workstation build proof using the same commit SHA;
@@ -36,32 +36,7 @@ The frontier is complete only when one exact candidate SHA is traceable through 
 
 ## 2. Non-goals
 
-This frontier must not implement or introduce:
-
-- human login;
-- Google Sign-In;
-- email challenge;
-- Client API networking;
-- Kotlin SDK network transport;
-- tenant selection;
-- device enrollment;
-- Android Keystore protocol work;
-- location;
-- WhatsApp;
-- Home Assistant;
-- notifications/push;
-- Room or local persistence;
-- background sync;
-- voice or microphone;
-- analytics;
-- Firebase;
-- Hilt/Dagger;
-- Retrofit/OkHttp/Ktor client;
-- WorkManager;
-- provider SDKs;
-- production signing;
-- Play Store publishing;
-- product navigation, theme system, logo, onboarding, or final UX.
+This frontier must not implement or introduce human login, Google Sign-In, email challenge, Client API networking, Kotlin SDK network transport, tenant selection, device enrollment, Android Keystore protocol work, location, WhatsApp, Home Assistant, notifications/push, Room or local persistence, background sync, voice/microphone, analytics, Firebase, Hilt/Dagger, Retrofit/OkHttp/Ktor client, WorkManager, provider SDKs, production signing, Play Store publishing, product navigation, theme system, logo, onboarding, or final UX.
 
 The visible UI is intentionally disposable in appearance but permanent in architectural placement.
 
@@ -82,9 +57,9 @@ A dedicated governance PR must add an `android-build` check with these propertie
 - candidate execution is allowed only inside this non-privileged build job because compiling the application necessarily executes candidate Gradle/build logic;
 - trusted security checks continue to execute from the base branch and continue to inspect the candidate as data only.
 
-Before an Android project exists, the new check may succeed with an explicit, deterministic `ANDROID_PROJECT_NOT_PRESENT` bootstrap result. Once the functional frontier exists, the check must execute the pinned wrapper and run the approved build/test commands.
+Before an Android project exists, the new check may succeed with an explicit deterministic `ANDROID_PROJECT_NOT_PRESENT` result. Once the functional frontier exists, the check must execute the pinned wrapper and run the approved build/test commands.
 
-After the first real `android-build` check context is observed successfully, that exact context is added to `main` protection. Context names are discovered from GitHub; they are not guessed in branch protection configuration.
+After the first real `android-build` check context is observed successfully on `main`, that exact context is added to branch protection. Context names are discovered from GitHub; they are not guessed in branch protection configuration.
 
 ## 4. Trust separation in CI
 
@@ -96,17 +71,9 @@ The repository intentionally has two different trust models.
 
 ### 4.2 Candidate build job
 
-`android-build` is explicitly an unprivileged candidate-execution job. It may check out and execute the pull-request candidate solely to prove that the Android project builds and tests.
+`android-build` is explicitly an unprivileged candidate-execution job. The workflow definition used to launch it remains trusted from the base branch, while the job checks out the exact candidate SHA solely to prove that the Android project builds and tests.
 
-The candidate build job must have:
-
-- `contents: read` at most;
-- no secrets;
-- no write token use;
-- no deploy capability;
-- no package publishing;
-- no signing material;
-- no access to external private infrastructure.
+The candidate build job must have `contents: read` at most, `persist-credentials: false`, no secrets, no write token use, no deploy capability, no package publishing, no signing material, and no access to private infrastructure.
 
 A successful candidate build does not replace security/governance checks. Merge eligibility requires all required checks independently.
 
@@ -116,25 +83,27 @@ The first functional frontier uses exactly:
 
 - `minSdk = 28`;
 - `targetSdk = 36`;
-- `compileSdk = 36`;
+- `compileSdk = 37`;
 - Android Gradle Plugin `9.4.0`;
 - Gradle `9.6.0`;
 - JDK `17`;
-- Kotlin using the AGP 9.x integrated Kotlin support where applicable;
+- SDK Build Tools `36.0.0`;
+- AGP 9.x built-in Kotlin support;
+- Compose Compiler Gradle plugin `2.3.21`;
 - stable Jetpack Compose only;
 - Compose BOM `2026.08.00`;
 - Gradle Kotlin DSL;
 - Version Catalog.
 
+`compileSdk = 37` is deliberately independent from `targetSdk = 36`. The API-36 physical device remains a valid runtime certification target.
+
+The app uses built-in Kotlin from AGP and must not apply `org.jetbrains.kotlin.android`. The Compose compiler plugin remains separate and is pinned to `2.3.21`.
+
 No dependency is added merely because it is common in Android projects.
 
 ## 6. Exact frontier and file boundary
 
-The trusted frontier already defines branch:
-
-`feat/android-app-bootstrap-v1`
-
-and the exact implementation allowlist:
+The trusted frontier already defines branch `feat/android-app-bootstrap-v1` and the exact implementation allowlist:
 
 - `settings.gradle.kts`
 - `build.gradle.kts`
@@ -162,18 +131,24 @@ The root build files exist only to establish plugin/version resolution and the w
 
 The project does not create premature `core`, `sdk`, `features`, `capabilities`, `integrations`, `data`, or `sync` Gradle modules. Those repository zones already exist as architectural responsibilities, but physical Gradle modularization happens only when a later frontier has actual code that benefits from it.
 
-The build must use the committed Gradle wrapper. A globally installed Gradle is neither required nor authoritative.
+The build uses the committed Gradle wrapper. A globally installed Gradle is neither required nor authoritative.
+
+The minimum dependency set is:
+
+- Android application plugin `9.4.0`;
+- Compose compiler plugin `2.3.21`;
+- Compose BOM `2026.08.00`;
+- `androidx.activity:activity-compose:1.13.0`;
+- `androidx.compose.foundation:foundation`;
+- JUnit `4.13.2` for the plain JVM unit test.
+
+No Material, navigation, lifecycle ViewModel, DI, persistence, networking, analytics, Firebase, WorkManager, provider, or testing framework beyond JUnit is introduced.
 
 ## 8. Minimal application behavior
 
 `MainActivity` is the launcher Activity.
 
-Its only product-visible behavior is:
-
-- start successfully;
-- render one Compose surface;
-- display the text `Andy`;
-- center that text in the available screen.
+Its only product-visible behavior is to start successfully, render one Compose surface, display the text `Andy`, and center that text in the available screen.
 
 `MainActivity.kt` defines one package-visible immutable bootstrap constant named `BOOTSTRAP_TEXT` with value `"Andy"`, and the Compose content renders that constant. This constant exists solely to make the JVM unit test prove the exact visible bootstrap text without adding a test-only framework or extra production layer.
 
@@ -191,17 +166,13 @@ The frontier succeeds only if `:app:testDebugUnitTest` passes.
 
 ## 10. GitHub Android build check
 
-Once the governance prerequisite is merged, the candidate build job for `feat/android-app-bootstrap-v1` must run, at minimum:
+Once the governance prerequisite is merged, the candidate build job for `feat/android-app-bootstrap-v1` runs at minimum:
 
 `./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug`
 
-The build uses JDK 17 and API 36 tooling on the GitHub-hosted runner.
+The job uses JDK 17, `compileSdk 37`, SDK Build Tools 36.0.0, and the committed Gradle wrapper. It fails if either unit tests or debug assembly fail.
 
-The job must fail if either unit tests or debug assembly fail.
-
-The initial build job does not publish artifacts externally, sign production binaries, upload to Play, or use secrets.
-
-If practical without expanding permissions or scope, the job may expose the debug APK as a short-lived GitHub Actions artifact. Artifact publication is optional for this frontier; reproducibility by commit SHA remains the authority.
+The initial build job does not publish externally, sign production binaries, upload to Play, or use secrets. Artifact upload is optional; reproducibility by exact commit SHA remains authoritative.
 
 ## 11. Independent workstation certification
 
@@ -211,12 +182,15 @@ The workstation baseline is:
 
 - x86_64 Linux;
 - JDK 17;
-- Android SDK Platform 36;
-- Android Build-Tools 36.0.0;
+- Android SDK Platform 37 for compilation;
+- Android SDK Platform 36 may remain installed for the physical-device/API baseline;
+- SDK Build Tools 36.0.0;
 - ADB/platform-tools capable of communicating with the test device;
 - no requirement for globally installed Gradle.
 
-The repository must never contain the workstation hostname, login, network address, local alias, SSH details, Android SDK filesystem path, or other lab inventory.
+Before certification, install only `platforms;android-37` if it is absent. Do not update JDK, ADB, Build Tools, or unrelated SDK components merely for this frontier.
+
+The repository must never contain workstation hostname, login, network address, local alias, SSH details, Android SDK filesystem path, or other lab inventory.
 
 Certification uses an isolated clean checkout/worktree of the exact pull-request commit SHA, not merely the same branch name.
 
@@ -230,18 +204,11 @@ The certification record is operational evidence, not committed private-infrastr
 
 ## 12. Physical-device certification
 
-A real Android device is part of the first certification pass.
-
-The approved device class for this proof is:
-
-- Android 16;
-- API level 36;
-- arm64-v8a;
-- authorized over ADB.
+A real Android device is part of the first certification pass. The approved device class for this proof is Android 16, API level 36, `arm64-v8a`, authorized over ADB.
 
 No device serial, account data, personal identifiers, installed-app inventory, precise location, or other private device data is committed to Git.
 
-The physical-device proof must use the APK produced from the same certified commit SHA. The operator may rebuild locally from that SHA, but the resulting APK digest must be recorded so the exact installed binary is identifiable.
+The physical-device proof uses the APK produced from the same certified commit SHA. The resulting APK digest is recorded so the exact installed binary is identifiable.
 
 Certification steps are:
 
@@ -260,30 +227,15 @@ The desired evidence chain is:
 
 `PR candidate SHA -> trusted governance checks -> GitHub android-build PASS -> independent workstation build PASS -> APK SHA-256 -> physical API-36 device PASS`
 
-Every stage must refer to the same Git commit SHA.
-
-A statement such as “the branch was the same” or “similar code compiled” is insufficient certification.
+Every stage must refer to the same Git commit SHA. “Same branch” or “similar code” is insufficient certification.
 
 ## 14. Failure handling
 
-The frontier fails closed for architectural or reproducibility problems.
+Stop with `FRONTIER_EXPANSION_REQUIRED` if an additional repository path is needed, a new dependency outside the approved baseline is required, a workflow/governance change is discovered while on the feature branch, or the implementation needs a different module boundary.
 
-Stop with `FRONTIER_EXPANSION_REQUIRED` if:
+Treat Gradle syntax errors, Kotlin compile errors, unit-test failures caused by candidate code, resource/manifest errors within allowed files, and build-tool invocation errors caused by implementation as ordinary implementation failures rather than frontier expansions.
 
-- an additional repository path is needed;
-- a new dependency outside the approved baseline is required;
-- a workflow/governance change is discovered while on the feature branch;
-- the implementation needs a different module boundary.
-
-Treat these as ordinary implementation failures, not frontier expansions:
-
-- Gradle syntax error;
-- Kotlin compile error;
-- unit-test failure caused by candidate code;
-- resource/manifest error within allowed files;
-- build-tool invocation error caused by the implementation.
-
-An unavailable external certification workstation or disconnected physical device blocks only the independent certification step; it must not be silently reported as PASS. GitHub remains the repository merge authority unless branch protection is explicitly changed through governance.
+An unavailable external certification workstation or disconnected physical device blocks only independent certification and must never be silently reported as PASS. GitHub remains repository merge authority unless branch protection is explicitly changed through governance.
 
 ## 15. Merge and completion policy
 
@@ -301,14 +253,14 @@ The functional PR is not merged until:
 - the screen proves the minimal `Andy` shell;
 - no secret or real personal/infrastructure data is introduced.
 
-The workstation/device certification remains complementary rather than a permanent required GitHub check in this first frontier. If later reliability and availability justify a self-hosted runner or external check integration, that is a separate governance design.
+The workstation/device certification remains complementary rather than a permanent required GitHub check in this first frontier.
 
 ## 16. Successful frontier result
 
 A successful `android-app-bootstrap-v1` leaves the repository with exactly one real Android application module and a deliberately tiny visible product surface.
 
-The expected final statement is conceptually:
+The expected final evidence is:
 
 `candidate SHA X -> all required GitHub checks PASS -> workstation SHA X PASS -> APK SHA-256 Y -> real Android 16/API 36 device PASS -> screen = Andy`
 
-The next frontier may then begin actual product capabilities, starting from a reproducible, governed Android foundation instead of an unverified prototype.
+The next frontier may then begin actual product capabilities from a reproducible, governed Android foundation.
