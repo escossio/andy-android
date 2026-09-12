@@ -1,7 +1,12 @@
 import copy
 import json
+import os
 from pathlib import Path
 import re
+import signal
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 from scripts.architecture.check_guardrails import evaluate_frontier, validate_manifest
@@ -39,6 +44,143 @@ def device_identity_manifest():
 
 
 class GuardPolicyTests(unittest.TestCase):
+    def assert_boot_diagnostics(self, text):
+        job = self.jobs(text)['android-instrumentation']
+        boot = self.step(job, 'Create and boot API 36 emulator')
+        self.assert_step_condition(boot, "steps.device_identity.outputs.present == 'true'")
+        for required in (
+            'timeout-minutes: 7',
+            'EMULATOR_PID=$!',
+            'boot_deadline=$((SECONDS + 240))',
+            'while (( SECONDS < boot_deadline )); do',
+            'kill -0 "$EMULATOR_PID"',
+            'timeout -k 1s 3s "$ADB" wait-for-device',
+            'timeout -k 1s 3s "$ADB" shell getprop sys.boot_completed',
+            'timeout -k 1s 60s "$AVDMANAGER" create avd',
+            "trap 'status=$?; if (( status != 0 )); then boot_diagnostics; fi' EXIT",
+            'echo "=== emulator process ==="',
+            'ps -p "${EMULATOR_PID:-$$}" -o pid,ppid,stat,args || true',
+            'echo "=== adb devices ==="',
+            'timeout -k 1s 10s "$ADB" devices -l || true',
+            'echo "=== emulator log ==="',
+            'cat "$RUNNER_TEMP/andy-emulator.log" || true',
+            'test -e /dev/kvm && ls -l /dev/kvm || true',
+        ):
+            self.assertIn(required, boot)
+        self.assertNotRegex(boot, r'(?m)^\s*"\$ADB" (wait-for-device|shell)\b')
+        cleanup = self.step(job, 'Stop emulator')
+        self.assert_step_condition(cleanup,
+                                   "always() && steps.device_identity.outputs.present == 'true'")
+        self.assertIn('"$SDK_ROOT/platform-tools/adb" emu kill || true', cleanup)
+        self.assertNotIn('emulator -kill', cleanup)
+
+    def test_emulator_cleanup_uses_console_command_and_rejects_invalid_form(self):
+        text = self.workflow()
+        job = self.jobs(text)['android-instrumentation']
+        cleanup = self.step(job, 'Stop emulator')
+        expected = '"$SDK_ROOT/platform-tools/adb" emu kill || true'
+        self.assertEqual(cleanup.split('        run: |\n', 1)[1].strip().splitlines()[-1].strip(),
+                         expected)
+        self.assert_boot_diagnostics(text)
+        for invalid in ('"$SDK_ROOT/platform-tools/adb" emulator -kill || true',
+                        'adb emulator -kill || true'):
+            with self.subTest(command=invalid), self.assertRaises(AssertionError):
+                self.assert_boot_diagnostics(text.replace(expected, invalid))
+
+    def test_emulator_boot_requires_bounded_observable_wait(self):
+        self.assert_boot_diagnostics(self.workflow())
+
+    def test_emulator_boot_rejects_missing_diagnostic_safeguards(self):
+        text = self.workflow()
+        self.assert_boot_diagnostics(text)
+        for original in (
+            'EMULATOR_PID=$!', 'kill -0 "$EMULATOR_PID"',
+            'while (( SECONDS < boot_deadline )); do',
+            'timeout -k 1s 3s', 'timeout -k 1s 60s',
+            'timeout -k 1s 10s', 'timeout-minutes: 7',
+            'boot_diagnostics; fi', 'cat "$RUNNER_TEMP/andy-emulator.log" || true',
+            'ps -p "${EMULATOR_PID:-$$}" -o pid,ppid,stat,args || true',
+            'test -e /dev/kvm && ls -l /dev/kvm || true',
+            "always() && steps.device_identity.outputs.present == 'true'",
+        ):
+            with self.subTest(removed=original), self.assertRaises(AssertionError):
+                self.assert_boot_diagnostics(text.replace(original, ''))
+
+    def run_boot_fixture(self, mode):
+        job = self.jobs(self.workflow())['android-instrumentation']
+        step = self.step(job, 'Create and boot API 36 emulator')
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        # Exercise the actual Bash with short test-only deadlines; no real SDK/AVD.
+        script = script.replace('SECONDS + 240', 'SECONDS + 2')
+        script = script.replace('3s ', '0.2s ').replace('60s ', '0.2s ')
+        script = script.replace('10s ', '0.2s ').replace('sleep 2', 'sleep 0.05')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixtures = {
+                'cmdline-tools/latest/bin/avdmanager':
+                    'if [[ "$BOOT_FIXTURE" == avd_failure ]]; then exit 9; fi\nexit 0\n',
+                'emulator/emulator':
+                    'echo synthetic-emulator-log\n'
+                    'if [[ "$BOOT_FIXTURE" == early_exit ]]; then exit 1; fi\n'
+                    'exec sleep 30\n',
+                'platform-tools/adb':
+                    'case "$*" in\n'
+                    '  wait-for-device)\n'
+                    '    if [[ "$BOOT_FIXTURE" == success || "$BOOT_FIXTURE" == boot_stall ]]; '
+                    'then exit 0; fi\n'
+                    '    exec sleep 30 ;;\n'
+                    '  "shell getprop sys.boot_completed")\n'
+                    '    if [[ "$BOOT_FIXTURE" == success ]]; then echo 1; exit 0; fi\n'
+                    '    exec sleep 30 ;;\n'
+                    '  "devices -l")\n'
+                    '    if [[ "$BOOT_FIXTURE" == diagnostics_stall ]]; then exec sleep 30; fi\n'
+                    '    echo synthetic-adb-devices ;;\n'
+                    '  *) exit 2 ;;\n'
+                    'esac\n',
+            }
+            for relative, content in fixtures.items():
+                executable = root / relative
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text('#!/bin/bash\n' + content)
+                executable.chmod(0o755)
+            env = dict(os.environ, ANDROID_SDK_ROOT=temporary, ANDROID_HOME=temporary,
+                       RUNNER_TEMP=temporary, BOOT_FIXTURE=mode)
+            process = subprocess.Popen(['bash', '-c', script], env=env, cwd=temporary,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, start_new_session=True)
+            try:
+                try:
+                    output, _ = process.communicate(timeout=6)
+                except subprocess.TimeoutExpired:
+                    self.fail('Boot script exceeded diagnostic fixture deadline: ' + mode)
+                return process.returncode, output
+            finally:
+                # Kill only the synthetic process group, including its fake emulator.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+
+    def test_emulator_boot_failures_are_bounded_and_surface_diagnostics(self):
+        for mode in ('early_exit', 'adb_stall', 'boot_stall', 'diagnostics_stall', 'avd_failure'):
+            with self.subTest(mode=mode):
+                status, output = self.run_boot_fixture(mode)
+                self.assertNotEqual(status, 0, output)
+                for heading in ('=== emulator process ===', '=== adb devices ===',
+                                '=== emulator log ===', '=== host virtualization ==='):
+                    self.assertIn(heading, output)
+                if mode != 'avd_failure':
+                    self.assertIn('synthetic-emulator-log', output)
+                if mode == 'early_exit':
+                    self.assertIn('EMULATOR_EXITED_BEFORE_BOOT', output)
+                    self.assertNotIn('EMULATOR_BOOT_TIMEOUT', output)
+
+    def test_emulator_boot_success_requires_boot_completed(self):
+        status, output = self.run_boot_fixture('success')
+        self.assertEqual(status, 0, output)
+        self.assertNotIn('=== emulator log ===', output)
+
     def test_android_instrumentation_rejects_privilege_and_emulator_mutations(self):
         text = self.workflow()
         self.assert_android_instrumentation_job(text)
@@ -104,7 +246,7 @@ class GuardPolicyTests(unittest.TestCase):
             'andy-ci-api36',
             'sys.boot_completed',
             ':data:device-identity:connectedDebugAndroidTest',
-            'emulator -kill',
+            'emu kill',
         ):
             self.assertIn(required, job)
         for forbidden in (
