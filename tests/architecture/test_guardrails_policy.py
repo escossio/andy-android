@@ -39,6 +39,85 @@ def device_identity_manifest():
 
 
 class GuardPolicyTests(unittest.TestCase):
+    def test_android_instrumentation_rejects_privilege_and_emulator_mutations(self):
+        text = self.workflow()
+        self.assert_android_instrumentation_job(text)
+        job = self.jobs(text)['android-instrumentation']
+        mutations = [
+            job.replace('contents: read', 'contents: write'),
+            job.replace('persist-credentials: false', 'persist-credentials: true', 1),
+            job.replace('github.event.pull_request.head.sha', 'github.head_ref'),
+            job.replace("'system-images;android-36;google_apis;x86_64'",
+                        "'system-images;android-35;google_apis;x86_64'"),
+            job.replace(':data:device-identity:connectedDebugAndroidTest', ':app:assembleDebug'),
+            job.replace('SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+                        'SDK_ROOT="/usr/local/lib/android/sdk"', 1),
+            job + '\n      - run: sudo true\n',
+            job + '\n      - run: ssh synthetic.invalid\n',
+        ]
+        for index, mutation in enumerate(mutations):
+            candidate = text.replace(job, mutation, 1)
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                self.assert_android_instrumentation_job(candidate)
+
+    def assert_android_instrumentation_job(self, text):
+        jobs = self.jobs(text)
+        self.assertIn('android-instrumentation', jobs)
+        job = jobs['android-instrumentation']
+        self.assertIn('name: android-instrumentation', job)
+        self.assertIn('runs-on: ubuntu-latest', job)
+        self.assertIn('timeout-minutes: 35', job)
+        permissions = re.search(r'^    permissions:\n(.*?)^    steps:', job,
+                                flags=re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(permissions)
+        self.assertEqual(permissions[1].strip(), 'contents: read')
+        checkouts = self.checkouts(job)
+        self.assertEqual(len(checkouts), 2)
+        self.assertIn('ref: ${{ github.sha }}', checkouts[0])
+        self.assertIn('ref: ${{ github.event.pull_request.head.sha }}', checkouts[1])
+        for checkout in checkouts:
+            self.assertEqual(checkout.count('persist-credentials: false'), 1)
+            self.assertIn('fetch-depth: 1', checkout)
+        self.assertIn("if: github.event_name == 'push'", checkouts[0])
+        self.assertIn("if: github.event_name == 'pull_request_target'", checkouts[1])
+        self.assertIn("java-version: '17'", job)
+        self.assertIn('distribution: temurin', job)
+        self.assertNotRegex(job, r'\$\{\{\s*secrets\b|:\s*write(?:-all)?\b')
+        detection = self.step(job, 'Detect device identity module')
+        self.assertIn('[[ -f data/device-identity/build.gradle.kts ]]', detection)
+        self.assertIn('DEVICE_IDENTITY_MODULE_NOT_PRESENT', detection)
+        for name in ('Install Android emulator dependencies', 'Create and boot API 36 emulator',
+                     'Run real Android Keystore instrumentation tests'):
+            self.assert_step_condition(self.step(job, name),
+                                       "steps.device_identity.outputs.present == 'true'")
+        self.assert_step_condition(self.step(job, 'Stop emulator'),
+                                   "always() && steps.device_identity.outputs.present == 'true'")
+        for required in (
+            'data/device-identity/build.gradle.kts',
+            'DEVICE_IDENTITY_MODULE_PRESENT',
+            'SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+            'cmdline-tools/latest/bin/sdkmanager',
+            'cmdline-tools/latest/bin/avdmanager',
+            "'platforms;android-37.0'",
+            "'build-tools;36.0.0'",
+            "'system-images;android-36;google_apis;x86_64'",
+            'andy-ci-api36',
+            'sys.boot_completed',
+            ':data:device-identity:connectedDebugAndroidTest',
+            'emulator -kill',
+        ):
+            self.assertIn(required, job)
+        for forbidden in (
+            'secrets.', 'contents: write', 'id-token:', 'sudo ', 'apt-get ',
+            'setup-android', 'reactivecircus', 'self-hosted', 'ssh ', 'note',
+            '/usr/local/lib/android/sdk', 'GITHUB_PATH', 'export PATH=',
+            'continue-on-error:', 'deploy', 'publish', 'signing',
+        ):
+            self.assertNotIn(forbidden, job)
+
+    def test_android_instrumentation_has_separate_unprivileged_boundary(self):
+        self.assert_android_instrumentation_job(self.workflow())
+
     def test_device_identity_frontier_rejects_unlisted_paths(self):
         manifest = device_identity_manifest()
         errors = evaluate_frontier(manifest, ['README.md'], {})
@@ -73,6 +152,16 @@ class GuardPolicyTests(unittest.TestCase):
     def checkouts(self, job):
         steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
         return [step for step in steps if 'uses: actions/checkout@' in step]
+
+    def step(self, job, name):
+        steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
+        matches = [step for step in steps if step.startswith('name: ' + name + '\n')]
+        self.assertEqual(len(matches), 1, name)
+        return matches[0]
+
+    def assert_step_condition(self, step, condition):
+        self.assertEqual(re.findall(r'^        if: (.*)$', step, flags=re.MULTILINE),
+                         [condition])
 
     def assert_trusted_jobs(self, text):
         self.assertIn('  pull_request_target:', text)
