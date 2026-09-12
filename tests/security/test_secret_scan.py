@@ -74,6 +74,27 @@ class SecretScanTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertNotIn('ghp_' + 'A' * 36, result.stdout)
 
+    def test_git_rejects_symlinks_and_path_indirection(self):
+        for name, link in [('link', True), ('..\\outside', False)]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                def git(*args):
+                    return subprocess.check_output(['git', '-C', tmp, *args], stderr=subprocess.PIPE).decode().strip()
+                git('init', '-b', 'main')
+                git('config', 'user.name', 'Synthetic Test')
+                git('config', 'user.email', 'synthetic@example.invalid')
+                if link:
+                    os.symlink('../outside', root / name)
+                else:
+                    (root / name).write_text('synthetic')
+                git('add', '.')
+                git('commit', '-m', 'synthetic unsafe entry')
+                result = subprocess.run([sys.executable, '-I', str(SCANNER),
+                                         '--git-ref', git('rev-parse', 'HEAD')],
+                                        cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('UNSAFE_ENTRY', result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()
