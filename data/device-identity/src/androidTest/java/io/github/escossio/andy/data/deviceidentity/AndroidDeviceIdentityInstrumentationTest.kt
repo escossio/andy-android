@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.escossio.andy.core.deviceidentity.DeviceIdentityUnavailableReason
+import io.github.escossio.andy.core.deviceidentity.DeviceIdentityResult
+import io.github.escossio.andy.core.deviceidentity.DeviceIdentityEngine
 import io.github.escossio.andy.core.deviceidentity.DeviceKeyFingerprint
 import io.github.escossio.andy.core.deviceidentity.MetadataLoadResult
 import io.github.escossio.andy.core.deviceidentity.StoredIdentityState
@@ -19,6 +21,53 @@ import java.security.interfaces.ECPublicKey
 
 @RunWith(AndroidJUnit4::class)
 class AndroidDeviceIdentityInstrumentationTest {
+    @Test
+    fun factoryCreatesStableIdentityForSyntheticInstallation() {
+        val first = AndroidDeviceIdentityFactory.create(
+            context, testFileName, testAlias, { ByteArray(32) { 1 } },
+        ).ensureIdentity()
+        val second = AndroidDeviceIdentityFactory.create(
+            context, testFileName, testAlias, { ByteArray(32) { 2 } },
+        ).ensureIdentity()
+        assertTrue(first is DeviceIdentityResult.Ready)
+        assertEquals(first, second)
+    }
+
+    @Test
+    fun provisioningMetadataWithExistingKeyRecoversToReady() {
+        val repository = NoBackupDeviceIdentityMetadataRepository(context, testFileName)
+        repository.writeProvisioning(testAlias)
+        val crypto = AndroidKeystoreDeviceIdentityCrypto()
+        crypto.generateKey(testAlias)
+        val before = crypto.publicKeySubjectPublicKeyInfo(testAlias)
+        val result = DeviceIdentityEngine(repository, crypto, { ByteArray(32) { 3 } }, testAlias).ensureIdentity()
+        assertTrue(result is DeviceIdentityResult.Ready)
+        assertTrue(before.contentEquals(crypto.publicKeySubjectPublicKeyInfo(testAlias)))
+        assertEquals(StoredIdentityState.READY, (repository.load() as MetadataLoadResult.Present).metadata.state)
+    }
+
+    @Test
+    fun establishedReadyIdentityWithDeletedKeyFailsClosedWithoutReplacement() {
+        val first = AndroidDeviceIdentityFactory.create(
+            context, testFileName, testAlias, { ByteArray(32) { 4 } },
+        ).ensureIdentity()
+        assertTrue(first is DeviceIdentityResult.Ready)
+        val readyMetadata = metadataFile.readText()
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        keyStore.deleteEntry(testAlias)
+        repeat(2) {
+            val result = AndroidDeviceIdentityFactory.create(
+                context, testFileName, testAlias, { ByteArray(32) { 5 } },
+            ).ensureIdentity()
+            assertEquals(
+                DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.ESTABLISHED_KEY_MISSING),
+                result,
+            )
+            assertTrue(!keyStore.containsAlias(testAlias))
+            assertEquals(readyMetadata, metadataFile.readText())
+        }
+    }
+
     private val testAlias = "andy_device_identity_test_${System.nanoTime()}"
 
     @After
