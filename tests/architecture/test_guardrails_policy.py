@@ -79,9 +79,23 @@ class GuardPolicyTests(unittest.TestCase):
         self.assertIn("java-version: '17'", job)
         self.assertIn('[[ -x ./gradlew && -f ./settings.gradle.kts && -f ./app/build.gradle.kts ]]', job)
         self.assertIn('ANDROID_PROJECT_NOT_PRESENT', job)
-        self.assertIn("sdkmanager 'platforms;android-37' 'build-tools;36.0.0'", job)
+        self.assertIn("sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'", job)
         self.assertEqual(job.count("if: steps.android_project.outputs.present == 'true'"), 2)
         self.assertIn('./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug', job)
+        steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
+        uploads = [step for step in steps if 'uses: actions/upload-artifact@' in step]
+        self.assertEqual(len(uploads), 1)
+        upload = uploads[0]
+        self.assertIn('uses: actions/upload-artifact@v4', upload)
+        self.assertIn("if: success() && steps.android_project.outputs.present == 'true'", upload)
+        self.assertEqual(upload.split('        with:\n', 1)[1].strip(),
+                         'name: andy-debug-apk\n'
+                         '          path: app/build/outputs/apk/debug/app-debug.apk\n'
+                         '          retention-days: 7\n'
+                         '          if-no-files-found: error')
+        self.assertLess(job.index('./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug'),
+                        job.index(upload))
+        self.assertNotIn('continue-on-error:', job)
         self.assertNotRegex(job, r'\$\{\{\s*secrets\b|:\s*write(?:-all)?\b')
         for forbidden in ('GH_TOKEN', 'GITHUB_TOKEN', 'signing', 'deploy', 'publish',
                           'id-token', 'ssh', 'note', 'self-hosted', 'attention-router',
@@ -126,6 +140,27 @@ class GuardPolicyTests(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutations.index(mutation)), self.assertRaises(AssertionError):
                 self.assert_android_build_job(prefix + '\n  android-build:' + mutation)
+
+    def test_android_build_rejects_sdk_and_artifact_mutations(self):
+        text = self.workflow()
+        self.assert_android_build_job(text)
+        mutations = [
+            text.replace("'platforms;android-37.0'", "'platforms;android-37'"),
+            text.replace('actions/upload-artifact@v4', 'actions/download-artifact@v4'),
+            text.replace("success() && steps.android_project.outputs.present == 'true'",
+                         'always()'),
+            text.replace("success() && steps.android_project.outputs.present == 'true'",
+                         'success()'),
+            text.replace('path: app/build/outputs/apk/debug/app-debug.apk', 'path: app/**'),
+            text.replace('name: andy-debug-apk', 'name: other-artifact'),
+            text.replace('retention-days: 7', 'retention-days: 90'),
+            text.replace('if-no-files-found: error', 'if-no-files-found: warn'),
+            text.replace('name: Build and test exact candidate',
+                         'name: Build and test exact candidate\n        continue-on-error: true'),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                self.assert_android_build_job(mutation)
 
     def test_exact_allowed_path_passes(self):
         self.assertEqual(evaluate_frontier(policy(), ['settings.gradle.kts'], {}), [])
