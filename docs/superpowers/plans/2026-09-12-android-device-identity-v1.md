@@ -2,59 +2,57 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement an installation-scoped, automatically provisioned, fail-closed Android device identity backed by a non-exportable P-256 Android Keystore key, without changing the visible Andy bootstrap UI or contacting any backend.
+**Goal:** Implement an installation-scoped, automatically provisioned, fail-closed Android device identity backed by a non-exportable P-256 Android Keystore key, with no visible UI change and no backend/network dependency.
 
-**Architecture:** Add a Kotlin-only `core:device-identity` module containing the public result contract, fingerprint type, metadata abstractions, and deterministic state-machine engine. Add an Android `data:device-identity` module implementing those abstractions with Android Keystore, `AtomicFile`, and `noBackupFilesDir`. `app` only invokes the manager during startup and logs bounded readiness/unavailable events; it does not know cryptographic details.
+**Architecture:** Add a Kotlin-only `core:device-identity` module for the public result contract, canonical fingerprinting, storage/crypto ports, and deterministic state-machine engine. Add an Android `data:device-identity` module implementing the ports with Android Keystore and `AtomicFile` under `noBackupFilesDir`. `app` invokes the manager at launch and logs bounded readiness/unavailable events only.
 
-**Tech Stack:** Kotlin 2.3.21, Android Gradle Plugin 9.4.0, Gradle 9.6.0, JDK 17, minSdk 28, targetSdk 36, compileSdk 37, AndroidX Test Runner 1.7.0, AndroidX Test Ext JUnit 1.3.0, JUnit 4.13.2, Android Keystore, `SHA256withECDSA`, `AtomicFile`.
+**Tech Stack:** Kotlin 2.3.21, Android Gradle Plugin 9.4.0, Gradle 9.6.0, JDK 17, minSdk 28, targetSdk 36, compileSdk 37, AndroidX Test Core/Runner 1.7.0, AndroidX Test Ext JUnit 1.3.0, JUnit 4.13.2, Android Keystore, `SHA256withECDSA`, `AtomicFile`.
 
 **Spec:** `docs/superpowers/specs/2026-09-12-android-device-identity-v1-design.md`
 
 ## Global Constraints
 
-- Do not start until the governance/CI plan `docs/superpowers/plans/2026-09-12-android-device-identity-v1-governance-ci.md` is merged and `android-instrumentation` is a required check.
+- Do not start until `docs/superpowers/plans/2026-09-12-android-device-identity-v1-governance-ci.md` is merged and `android-instrumentation` is required.
 - Feature branch: `feat/android-device-identity-v1`.
-- The feature PR may modify only paths listed by `.github/architecture/frontiers/android-device-identity-v1.json`.
-- Reinstall means a new identity. No backup/restore of identity metadata.
-- First launch provisions automatically; later launches reuse the same identity.
-- Local fingerprint is not server `device_id` and grants no server authority.
-- Key algorithm: EC P-256 / `secp256r1`.
-- Signature algorithm: `SHA256withECDSA`.
-- Private key remains non-exportable in Android Keystore.
-- StrongBox is optional and must not be required.
-- Per-use biometric/PIN authentication is not required for the device identity key.
-- Fingerprint format is exactly `sha256:` followed by 64 lowercase hexadecimal characters.
-- Fingerprint input is X.509 SubjectPublicKeyInfo DER (`PublicKey.encoded`).
-- Lifecycle: `ABSENT -> PROVISIONING -> READY`; only `PROVISIONING` may self-recover.
+- Modify only paths admitted by `.github/architecture/frontiers/android-device-identity-v1.json`.
+- Reinstall creates a new identity. No identity backup/restore.
+- First launch provisions automatically; later launches reuse the same key/fingerprint.
+- Fingerprint is local `device_key_fingerprint`, never authoritative server `device_id`.
+- Key: EC P-256 / `secp256r1`, Android Keystore, non-exportable private key.
+- Signature: `SHA256withECDSA`.
+- StrongBox is optional and not requested explicitly.
+- Device key use does not require biometric/PIN.
+- Fingerprint format: `sha256:` plus exactly 64 lowercase hex characters.
+- Fingerprint input: X.509 SubjectPublicKeyInfo DER from `PublicKey.encoded`.
+- Lifecycle: `ABSENT -> PROVISIONING -> READY`; only `PROVISIONING` may recover automatically.
 - A `READY` identity is never silently regenerated, deleted, rotated, or replaced.
-- Every valid launch recalculates the fingerprint and runs a fresh local sign/verify self-test.
-- Metadata lives only in `noBackupFilesDir/device_identity_v1.json` and uses atomic replacement.
-- No Room, DataStore, Hilt, Dagger, Retrofit, OkHttp, Ktor client, Firebase, Google Play Services, WorkManager, analytics, background workers, provider SDKs, network permission, HTTP, backend URL, tenant logic, human identity, session logic, or enrollment.
-- No public arbitrary signing API.
-- Visible UI must remain the current centered `Andy` text.
-- Normal logs must never contain full fingerprint, public key bytes, private key material, signatures, challenges, tenant/device backend IDs, phone, location, token, or infrastructure details.
-- Notebook and physical phone are not automatic gates for this frontier.
-- Do not merge automatically. Stop for explicit human approval after exact-SHA CI evidence.
+- Every valid `READY` launch recalculates the fingerprint and performs a fresh local sign/verify self-test.
+- Metadata path: `noBackupFilesDir/device_identity_v1.json`, atomically replaced.
+- No Room, DataStore, Hilt, Dagger, Retrofit, OkHttp, Ktor client, Firebase, Google Play Services, WorkManager, analytics, background workers, provider SDKs, HTTP, backend URLs, tenant logic, human identity, sessions, or enrollment.
+- No `android.permission.INTERNET`.
+- No public arbitrary signing API; only the infrastructure SPI method `signForSelfTest` exists.
+- Visible UI remains the current centered `Andy` text.
+- Logs never contain full fingerprint, public/private key material, signatures, challenge bytes, user data, location, tenant/server ids, tokens, or infrastructure details.
+- Notebook and physical phone are not automatic gates.
+- Do not merge automatically.
 
 ---
 
-## File Structure
+## Exact Feature File Set
 
 **Modify:**
-- `settings.gradle.kts` — include the two new modules.
-- `build.gradle.kts` — declare Android library and Kotlin JVM plugins with `apply false`.
-- `gradle/libs.versions.toml` — add plugin aliases and stable AndroidX Test versions.
-- `app/build.gradle.kts` — depend on core/data modules.
-- `app/src/main/java/io/github/escossio/andy/MainActivity.kt` — invoke identity startup before unchanged Compose content.
+- `settings.gradle.kts`
+- `build.gradle.kts`
+- `gradle/libs.versions.toml`
+- `app/build.gradle.kts`
+- `app/src/main/java/io/github/escossio/andy/MainActivity.kt`
 
-**Create core module:**
+**Create:**
 - `core/device-identity/build.gradle.kts`
 - `core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentity.kt`
 - `core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngine.kt`
 - `core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngineTest.kt`
 - `core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceKeyFingerprintTest.kt`
-
-**Create Android data module:**
 - `data/device-identity/build.gradle.kts`
 - `data/device-identity/src/main/AndroidManifest.xml`
 - `data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityFactory.kt`
@@ -62,27 +60,28 @@
 - `data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/NoBackupDeviceIdentityMetadataRepository.kt`
 - `data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt`
 
+No other path may change.
+
 ---
 
-### Task 1: Wire the new modules and test dependencies
+### Task 1: Wire the modules and stable test dependencies
 
 **Files:**
 - Modify: `settings.gradle.kts`
 - Modify: `build.gradle.kts`
 - Modify: `gradle/libs.versions.toml`
+- Modify: `app/build.gradle.kts`
 - Create: `core/device-identity/build.gradle.kts`
 - Create: `data/device-identity/build.gradle.kts`
 - Create: `data/device-identity/src/main/AndroidManifest.xml`
-- Modify: `app/build.gradle.kts`
 
 **Interfaces:**
 - Produces Gradle modules `:core:device-identity` and `:data:device-identity`.
-- `:data:device-identity` depends on `:core:device-identity`.
-- `:app` depends on both modules.
+- Data depends on core; app depends on both.
 
-- [ ] **Step 1: Update the version catalog**
+- [ ] **Step 1: Extend `gradle/libs.versions.toml` with exact stable entries**
 
-Add exact versions and aliases:
+Use:
 
 ```toml
 [versions]
@@ -91,6 +90,7 @@ kotlin = "2.3.21"
 composeBom = "2026.08.00"
 activityCompose = "1.13.0"
 junit = "4.13.2"
+androidxTestCore = "1.7.0"
 androidxTestRunner = "1.7.0"
 androidxTestExtJunit = "1.3.0"
 
@@ -99,6 +99,7 @@ androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = 
 androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 junit = { module = "junit:junit", version.ref = "junit" }
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestExtJunit" }
 
@@ -109,9 +110,9 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ```
 
-- [ ] **Step 2: Declare the new root plugins**
+- [ ] **Step 2: Update root plugin declarations**
 
-Change root `build.gradle.kts` to:
+`build.gradle.kts`:
 
 ```kotlin
 plugins {
@@ -122,7 +123,7 @@ plugins {
 }
 ```
 
-- [ ] **Step 3: Include both modules**
+- [ ] **Step 3: Include the modules**
 
 Append to `settings.gradle.kts`:
 
@@ -131,11 +132,11 @@ include(":core:device-identity")
 include(":data:device-identity")
 ```
 
-Keep existing repositories and `include(":app")` unchanged.
+Keep `include(":app")` and repository configuration unchanged.
 
-- [ ] **Step 4: Create the Kotlin-only core module build file**
+- [ ] **Step 4: Create the core module build file**
 
-Create `core/device-identity/build.gradle.kts`:
+`core/device-identity/build.gradle.kts`:
 
 ```kotlin
 plugins {
@@ -153,7 +154,7 @@ dependencies {
 
 - [ ] **Step 5: Create the Android data module build file**
 
-Create `data/device-identity/build.gradle.kts`:
+`data/device-identity/build.gradle.kts`:
 
 ```kotlin
 plugins {
@@ -180,54 +181,34 @@ dependencies {
     implementation(project(":core:device-identity"))
 
     testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
 }
 ```
 
-- [ ] **Step 6: Create the data module manifest with no permissions**
+- [ ] **Step 6: Create the permission-free data manifest**
 
-Create `data/device-identity/src/main/AndroidManifest.xml`:
+`data/device-identity/src/main/AndroidManifest.xml`:
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" />
 ```
 
-This intentionally declares no `INTERNET` permission.
+- [ ] **Step 7: Add app module dependencies**
 
-- [ ] **Step 7: Add module dependencies to the app**
-
-Add to `app/build.gradle.kts` dependencies:
+Add to `app/build.gradle.kts`:
 
 ```kotlin
 implementation(project(":core:device-identity"))
 implementation(project(":data:device-identity"))
 ```
 
-Keep current Compose dependencies and JUnit dependency unchanged.
-
-- [ ] **Step 8: Run Gradle project discovery**
-
-Run:
+- [ ] **Step 8: Verify module discovery and empty builds**
 
 ```bash
 ./gradlew --no-daemon projects
-```
-
-Expected output includes:
-
-```text
-Project ':app'
-Project ':core:device-identity'
-Project ':data:device-identity'
-```
-
-- [ ] **Step 9: Run empty-module compile tasks**
-
-Run:
-
-```bash
 ./gradlew --no-daemon \
   :core:device-identity:test \
   :data:device-identity:testDebugUnitTest \
@@ -235,9 +216,9 @@ Run:
   :app:assembleDebug
 ```
 
-Expected: PASS.
+Expected: both modules listed; all tasks PASS.
 
-- [ ] **Step 10: Commit Task 1**
+- [ ] **Step 9: Commit Task 1**
 
 ```bash
 git add settings.gradle.kts build.gradle.kts gradle/libs.versions.toml \
@@ -248,20 +229,20 @@ git commit -m "build: add device identity modules"
 
 ---
 
-### Task 2: Implement the public contract and canonical fingerprint
+### Task 2: Define the narrow public contract and canonical fingerprint
 
 **Files:**
 - Create: `core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentity.kt`
 - Create: `core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceKeyFingerprintTest.kt`
 
 **Interfaces:**
-- Produces `DeviceIdentityManager.ensureIdentity(): DeviceIdentityResult`.
-- Produces `DeviceKeyFingerprint.fromSubjectPublicKeyInfo(bytes)` and `DeviceKeyFingerprint.parse(value)`.
-- Produces bounded `DeviceIdentityUnavailableReason` values.
+- `DeviceIdentityManager.ensureIdentity(): DeviceIdentityResult`
+- `DeviceKeyFingerprint.fromSubjectPublicKeyInfo(ByteArray)`
+- `DeviceKeyFingerprint.parse(String)`
 
-- [ ] **Step 1: Write failing fingerprint and contract tests**
+- [ ] **Step 1: Write the failing fingerprint tests**
 
-Create `DeviceKeyFingerprintTest.kt`:
+`DeviceKeyFingerprintTest.kt`:
 
 ```kotlin
 package io.github.escossio.andy.core.deviceidentity
@@ -273,9 +254,9 @@ import org.junit.Test
 
 class DeviceKeyFingerprintTest {
     @Test
-    fun fingerprintUsesSha256PrefixAndLowercaseHex() {
-        val fingerprint = DeviceKeyFingerprint.fromSubjectPublicKeyInfo(byteArrayOf(1, 2, 3, 4))
-        assertTrue(fingerprint.value.matches(Regex("^sha256:[0-9a-f]{64}$")))
+    fun fingerprintUsesCanonicalSha256LowercaseHex() {
+        val value = DeviceKeyFingerprint.fromSubjectPublicKeyInfo(byteArrayOf(1, 2, 3, 4)).value
+        assertTrue(value.matches(Regex("^sha256:[0-9a-f]{64}$")))
     }
 
     @Test
@@ -296,17 +277,15 @@ class DeviceKeyFingerprintTest {
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [ ] **Step 2: Run and confirm RED**
 
 ```bash
 ./gradlew --no-daemon :core:device-identity:test --tests '*DeviceKeyFingerprintTest'
 ```
 
-Expected: compile failure because `DeviceKeyFingerprint` does not exist.
+Expected: compile failure because the type does not exist.
 
 - [ ] **Step 3: Implement `DeviceIdentity.kt`**
-
-Create:
 
 ```kotlin
 package io.github.escossio.andy.core.deviceidentity
@@ -320,7 +299,9 @@ value class DeviceKeyFingerprint private constructor(val value: String) {
 
         fun fromSubjectPublicKeyInfo(encoded: ByteArray): DeviceKeyFingerprint {
             val digest = MessageDigest.getInstance("SHA-256").digest(encoded)
-            val hex = digest.joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+            val hex = digest.joinToString(separator = "") { byte ->
+                "%02x".format(byte.toInt() and 0xff)
+            }
             return DeviceKeyFingerprint("sha256:$hex")
         }
 
@@ -349,10 +330,7 @@ interface DeviceIdentityManager {
     fun ensureIdentity(): DeviceIdentityResult
 }
 
-enum class StoredIdentityState {
-    PROVISIONING,
-    READY,
-}
+enum class StoredIdentityState { PROVISIONING, READY }
 
 data class StoredIdentityMetadata(
     val schemaVersion: Int,
@@ -382,9 +360,9 @@ interface DeviceIdentityCrypto {
 }
 ```
 
-`DeviceIdentityCrypto` is an infrastructure SPI used by the engine/data adapter; it is not the application-facing signing API. `DeviceIdentityManager` remains the only consumer-facing capability.
+`DeviceIdentityCrypto` is infrastructure SPI only. The application-facing `DeviceIdentityManager` exposes no signing method.
 
-- [ ] **Step 4: Run the core tests and verify GREEN**
+- [ ] **Step 4: Run core tests and confirm GREEN**
 
 ```bash
 ./gradlew --no-daemon :core:device-identity:test
@@ -402,75 +380,58 @@ git commit -m "feat: define device identity contract"
 
 ---
 
-### Task 3: Implement the fail-closed state-machine engine
+### Task 3: Implement the state machine with explicit test alias injection
 
 **Files:**
 - Create: `core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngine.kt`
 - Create: `core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngineTest.kt`
 
 **Interfaces:**
-- Consumes: `DeviceIdentityMetadataRepository`, `DeviceIdentityCrypto`, `DeviceKeyFingerprint`.
-- Produces: `DeviceIdentityEngine : DeviceIdentityManager`.
-- Stable constants: schema version `1`; alias `andy_device_identity_v1`.
+- Production alias constant: `andy_device_identity_v1`.
+- Constructor accepts `keyAlias` with the production constant as its default so instrumentation tests can use isolated synthetic aliases without changing the public manager contract.
 
-- [ ] **Step 1: Write the fake dependencies and failing happy-path tests**
+- [ ] **Step 1: Write failing happy-path tests with simple fakes**
 
-Create `DeviceIdentityEngineTest.kt` with fakes that record generation count and signatures. Start with these tests:
+Create fakes for `DeviceIdentityMetadataRepository` and `DeviceIdentityCrypto`. Tests must assert generation count. Begin with:
 
 ```kotlin
-package io.github.escossio.andy.core.deviceidentity
+@Test
+fun absentStateProvisionsOnceAndBecomesReady() {
+    val metadata = FakeMetadataRepository(MetadataLoadResult.Absent)
+    val crypto = FakeCrypto(keyExists = false, publicKey = byteArrayOf(1, 3, 3, 7))
+    val result = engine(metadata, crypto).ensureIdentity()
+    assertTrue(result is DeviceIdentityResult.Ready)
+    assertEquals(1, crypto.generateCount)
+    assertEquals(StoredIdentityState.READY, metadata.current().state)
+}
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertIs
-import org.junit.Test
-
-class DeviceIdentityEngineTest {
-    private val publicKey = byteArrayOf(1, 3, 3, 7)
-
-    @Test
-    fun absentStateProvisionsOnceAndBecomesReady() {
-        val metadata = FakeMetadataRepository(MetadataLoadResult.Absent)
-        val crypto = FakeCrypto(keyExists = false, publicKey = publicKey)
-        val engine = engine(metadata, crypto)
-
-        val result = engine.ensureIdentity()
-
-        assertIs<DeviceIdentityResult.Ready>(result)
-        assertEquals(1, crypto.generateCount)
-        assertEquals(StoredIdentityState.READY, metadata.current().state)
-    }
-
-    @Test
-    fun readyStateReusesExistingIdentityWithoutGeneration() {
-        val fingerprint = DeviceKeyFingerprint.fromSubjectPublicKeyInfo(publicKey)
-        val metadata = FakeMetadataRepository(
-            MetadataLoadResult.Present(
-                StoredIdentityMetadata(1, StoredIdentityState.READY,
-                    DEVICE_IDENTITY_KEY_ALIAS, fingerprint),
-            ),
-        )
-        val crypto = FakeCrypto(keyExists = true, publicKey = publicKey)
-        val result = engine(metadata, crypto).ensureIdentity()
-
-        assertEquals(DeviceIdentityResult.Ready(fingerprint), result)
-        assertEquals(0, crypto.generateCount)
-    }
+@Test
+fun readyStateReusesExistingIdentityWithoutGeneration() {
+    val publicKey = byteArrayOf(1, 3, 3, 7)
+    val fingerprint = DeviceKeyFingerprint.fromSubjectPublicKeyInfo(publicKey)
+    val metadata = FakeMetadataRepository(
+        MetadataLoadResult.Present(
+            StoredIdentityMetadata(1, StoredIdentityState.READY, TEST_ALIAS, fingerprint),
+        ),
+    )
+    val crypto = FakeCrypto(keyExists = true, publicKey = publicKey)
+    val result = engine(metadata, crypto).ensureIdentity()
+    assertEquals(DeviceIdentityResult.Ready(fingerprint), result)
+    assertEquals(0, crypto.generateCount)
 }
 ```
 
-Use `org.junit.Assert.assertTrue(result is DeviceIdentityResult.Ready)` if the JUnit version does not provide `assertIs`; do not add another assertion library.
+Use a test constant such as `private const val TEST_ALIAS = "andy_device_identity_test"`.
 
-- [ ] **Step 2: Run and verify RED**
+- [ ] **Step 2: Run and confirm RED**
 
 ```bash
 ./gradlew --no-daemon :core:device-identity:test --tests '*DeviceIdentityEngineTest'
 ```
 
-Expected: compile failure because `DeviceIdentityEngine` and constants do not exist.
+Expected: compile failure because `DeviceIdentityEngine` does not exist.
 
-- [ ] **Step 3: Implement the engine skeleton and happy paths**
-
-Create `DeviceIdentityEngine.kt` with these exact public constants and constructor shape:
+- [ ] **Step 3: Implement `DeviceIdentityEngine.kt`**
 
 ```kotlin
 package io.github.escossio.andy.core.deviceidentity
@@ -482,6 +443,7 @@ class DeviceIdentityEngine(
     private val metadataRepository: DeviceIdentityMetadataRepository,
     private val crypto: DeviceIdentityCrypto,
     private val challengeGenerator: () -> ByteArray,
+    private val keyAlias: String = DEVICE_IDENTITY_KEY_ALIAS,
 ) : DeviceIdentityManager {
     override fun ensureIdentity(): DeviceIdentityResult = when (val loaded = metadataRepository.load()) {
         MetadataLoadResult.Absent -> provisionFresh()
@@ -492,29 +454,24 @@ class DeviceIdentityEngine(
         }
     }
 
-    private fun provisionFresh(): DeviceIdentityResult {
-        return try {
-            if (crypto.hasKey(DEVICE_IDENTITY_KEY_ALIAS)) {
-                return DeviceIdentityResult.Unavailable(
-                    DeviceIdentityUnavailableReason.INCONSISTENT_FRESH_INSTALL,
-                )
-            }
-            metadataRepository.writeProvisioning(DEVICE_IDENTITY_KEY_ALIAS)
-            crypto.generateKey(DEVICE_IDENTITY_KEY_ALIAS)
+    private fun provisionFresh(): DeviceIdentityResult = try {
+        if (crypto.hasKey(keyAlias)) {
+            DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.INCONSISTENT_FRESH_INSTALL)
+        } else {
+            metadataRepository.writeProvisioning(keyAlias)
+            crypto.generateKey(keyAlias)
             completeProvisioning()
-        } catch (_: Exception) {
-            DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.PROVISIONING_FAILED)
         }
+    } catch (_: Exception) {
+        DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.PROVISIONING_FAILED)
     }
 
     private fun resumeProvisioning(metadata: StoredIdentityMetadata): DeviceIdentityResult {
-        if (metadata.keyAlias != DEVICE_IDENTITY_KEY_ALIAS) {
+        if (metadata.keyAlias != keyAlias) {
             return DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.METADATA_MALFORMED)
         }
         return try {
-            if (!crypto.hasKey(DEVICE_IDENTITY_KEY_ALIAS)) {
-                crypto.generateKey(DEVICE_IDENTITY_KEY_ALIAS)
-            }
+            if (!crypto.hasKey(keyAlias)) crypto.generateKey(keyAlias)
             completeProvisioning()
         } catch (_: Exception) {
             DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.PROVISIONING_FAILED)
@@ -523,30 +480,30 @@ class DeviceIdentityEngine(
 
     private fun completeProvisioning(): DeviceIdentityResult {
         val fingerprint = DeviceKeyFingerprint.fromSubjectPublicKeyInfo(
-            crypto.publicKeySubjectPublicKeyInfo(DEVICE_IDENTITY_KEY_ALIAS),
+            crypto.publicKeySubjectPublicKeyInfo(keyAlias),
         )
         if (!selfTest()) {
             return DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.SELF_TEST_FAILED)
         }
-        metadataRepository.writeReady(DEVICE_IDENTITY_KEY_ALIAS, fingerprint)
+        metadataRepository.writeReady(keyAlias, fingerprint)
         return DeviceIdentityResult.Ready(fingerprint)
     }
 
     private fun validateReady(metadata: StoredIdentityMetadata): DeviceIdentityResult {
         if (metadata.schemaVersion != DEVICE_IDENTITY_SCHEMA_VERSION ||
-            metadata.keyAlias != DEVICE_IDENTITY_KEY_ALIAS ||
+            metadata.keyAlias != keyAlias ||
             metadata.publicKeyFingerprint == null
         ) {
             return DeviceIdentityResult.Unavailable(DeviceIdentityUnavailableReason.METADATA_MALFORMED)
         }
         return try {
-            if (!crypto.hasKey(DEVICE_IDENTITY_KEY_ALIAS)) {
+            if (!crypto.hasKey(keyAlias)) {
                 return DeviceIdentityResult.Unavailable(
                     DeviceIdentityUnavailableReason.ESTABLISHED_KEY_MISSING,
                 )
             }
             val actual = DeviceKeyFingerprint.fromSubjectPublicKeyInfo(
-                crypto.publicKeySubjectPublicKeyInfo(DEVICE_IDENTITY_KEY_ALIAS),
+                crypto.publicKeySubjectPublicKeyInfo(keyAlias),
             )
             if (actual != metadata.publicKeyFingerprint) {
                 return DeviceIdentityResult.Unavailable(
@@ -566,46 +523,38 @@ class DeviceIdentityEngine(
 
     private fun selfTest(): Boolean {
         val challenge = challengeGenerator()
-        val signature = crypto.signForSelfTest(DEVICE_IDENTITY_KEY_ALIAS, challenge)
-        return crypto.verifySelfTest(DEVICE_IDENTITY_KEY_ALIAS, challenge, signature)
+        val signature = crypto.signForSelfTest(keyAlias, challenge)
+        return crypto.verifySelfTest(keyAlias, challenge, signature)
     }
 }
 ```
 
-- [ ] **Step 4: Make happy-path tests GREEN**
+- [ ] **Step 4: Add the complete fail-closed test matrix**
 
-```bash
-./gradlew --no-daemon :core:device-identity:test --tests '*DeviceIdentityEngineTest'
+Add these exact test cases using the fakes:
+
+```text
+provisioningWithExistingKeyCompletesWithoutGeneratingAgain
+provisioningWithoutKeyGeneratesAndCompletes
+readyWithMissingKeyIsUnavailableAndNeverGenerates
+readyWithFingerprintMismatchIsUnavailableAndNeverGenerates
+readyWithFailedSelfTestIsUnavailableAndNeverGenerates
+invalidMetadataReturnsUnavailableWithoutKeyMutation
+absentMetadataWithUnexpectedKeyIsUnavailableAndNeverGenerates
+establishedKeyExceptionIsUnavailableAndNeverGenerates
 ```
 
-Expected: current happy-path tests PASS.
+Every `READY` failure test must assert `generateCount == 0`.
 
-- [ ] **Step 5: Add the fail-closed test matrix**
-
-Add tests with the fakes for all of these exact behaviors:
-
-```kotlin
-@Test fun provisioningWithExistingKeyCompletesWithoutGeneratingAgain()
-@Test fun provisioningWithoutKeyGeneratesAndCompletes()
-@Test fun readyWithMissingKeyIsUnavailableAndNeverGenerates()
-@Test fun readyWithFingerprintMismatchIsUnavailableAndNeverGenerates()
-@Test fun readyWithFailedSelfTestIsUnavailableAndNeverGenerates()
-@Test fun metadataInvalidIsReturnedUnavailableWithoutKeyMutation()
-@Test fun absentMetadataWithUnexpectedKeyIsUnavailableAndNeverDeletesOrGenerates()
-@Test fun establishedKeyExceptionIsUnavailableAndNeverGenerates()
-```
-
-For every `READY` failure test, assert `crypto.generateCount == 0`.
-
-- [ ] **Step 6: Run the complete core test suite**
+- [ ] **Step 5: Run all core tests**
 
 ```bash
 ./gradlew --no-daemon :core:device-identity:test
 ```
 
-Expected: PASS with all state-machine and fingerprint cases.
+Expected: PASS.
 
-- [ ] **Step 7: Commit Task 3**
+- [ ] **Step 6: Commit Task 3**
 
 ```bash
 git add core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngine.kt \
@@ -615,51 +564,37 @@ git commit -m "feat: add fail-closed device identity engine"
 
 ---
 
-### Task 4: Implement atomic no-backup metadata persistence
+### Task 4: Implement atomic no-backup metadata storage
 
 **Files:**
 - Create: `data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/NoBackupDeviceIdentityMetadataRepository.kt`
-- Extend test: `data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt`
+- Create initially, then extend: `data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt`
 
 **Interfaces:**
-- Implements `DeviceIdentityMetadataRepository`.
-- File name: `device_identity_v1.json` inside `Context.noBackupFilesDir`.
-- Uses `android.util.AtomicFile`.
+- `NoBackupDeviceIdentityMetadataRepository(context, fileName = "device_identity_v1.json")`.
+- Test-only file isolation uses a synthetic `fileName` passed to the internal constructor.
 
-- [ ] **Step 1: Create the instrumentation test file with metadata tests first**
+- [ ] **Step 1: Write failing metadata instrumentation tests**
 
-Create `AndroidDeviceIdentityInstrumentationTest.kt` and begin with:
+Start `AndroidDeviceIdentityInstrumentationTest.kt` with:
 
 ```kotlin
-package io.github.escossio.andy.data.deviceidentity
-
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import io.github.escossio.andy.core.deviceidentity.DeviceIdentityUnavailableReason
-import io.github.escossio.andy.core.deviceidentity.MetadataLoadResult
-import io.github.escossio.andy.core.deviceidentity.StoredIdentityState
-import org.junit.After
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
-import org.junit.runner.RunWith
-import java.io.File
-
 @RunWith(AndroidJUnit4::class)
 class AndroidDeviceIdentityInstrumentationTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val metadataFile = File(context.noBackupFilesDir, "device_identity_v1.json")
+    private val testFileName = "device_identity_test_${System.nanoTime()}.json"
+    private val metadataFile get() = File(context.noBackupFilesDir, testFileName)
 
     @After
     fun cleanupMetadata() {
         metadataFile.delete()
+        File(metadataFile.path + ".bak").delete()
     }
 
     @Test
-    fun metadataLivesUnderNoBackupFilesDirAndRoundTripsReady() {
-        val repository = NoBackupDeviceIdentityMetadataRepository(context)
-        repository.writeProvisioning("andy_device_identity_v1")
+    fun metadataLivesUnderNoBackupFilesDirAndRoundTripsProvisioning() {
+        val repository = NoBackupDeviceIdentityMetadataRepository(context, testFileName)
+        repository.writeProvisioning("synthetic_alias")
         assertTrue(metadataFile.canonicalPath.startsWith(context.noBackupFilesDir.canonicalPath))
         val loaded = repository.load() as MetadataLoadResult.Present
         assertEquals(StoredIdentityState.PROVISIONING, loaded.metadata.state)
@@ -668,7 +603,7 @@ class AndroidDeviceIdentityInstrumentationTest {
     @Test
     fun malformedMetadataFailsClosed() {
         metadataFile.writeText("not-json")
-        val loaded = NoBackupDeviceIdentityMetadataRepository(context).load()
+        val loaded = NoBackupDeviceIdentityMetadataRepository(context, testFileName).load()
         assertEquals(
             MetadataLoadResult.Invalid(DeviceIdentityUnavailableReason.METADATA_MALFORMED),
             loaded,
@@ -677,21 +612,19 @@ class AndroidDeviceIdentityInstrumentationTest {
 }
 ```
 
-Add `androidx.test:core:1.7.0` if `ApplicationProvider` is not transitively available through runner; if needed, add an explicit `androidx-test-core` catalog entry at version `1.7.0` only if the compile error proves it is required. If that new dependency path is not allowed by the frontier, stop with `FRONTIER_EXPANSION_REQUIRED` rather than modifying governance inside the feature PR.
+Use imports from AndroidX Test Core, Ext JUnit, core device identity types, JUnit, and `java.io.File`.
 
-- [ ] **Step 2: Run instrumentation and verify RED**
-
-With an Android emulator/device available through the approved CI/local environment:
+- [ ] **Step 2: Run and confirm RED**
 
 ```bash
 ./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
 ```
 
-Expected: compile failure because `NoBackupDeviceIdentityMetadataRepository` does not exist.
+Expected: compile failure because the repository class does not exist.
 
-- [ ] **Step 3: Implement the repository with `AtomicFile`**
+- [ ] **Step 3: Implement exact atomic storage**
 
-Create:
+Create `NoBackupDeviceIdentityMetadataRepository.kt`:
 
 ```kotlin
 package io.github.escossio.andy.data.deviceidentity
@@ -708,10 +641,11 @@ import io.github.escossio.andy.core.deviceidentity.StoredIdentityState
 import org.json.JSONObject
 import java.io.File
 
-internal class NoBackupDeviceIdentityMetadataRepository(context: Context) :
-    DeviceIdentityMetadataRepository {
-
-    private val file = File(context.noBackupFilesDir, FILE_NAME)
+internal class NoBackupDeviceIdentityMetadataRepository(
+    context: Context,
+    fileName: String = DEFAULT_FILE_NAME,
+) : DeviceIdentityMetadataRepository {
+    private val file = File(context.noBackupFilesDir, fileName)
     private val atomicFile = AtomicFile(file)
 
     override fun load(): MetadataLoadResult {
@@ -729,9 +663,7 @@ internal class NoBackupDeviceIdentityMetadataRepository(context: Context) :
                     ?: return MetadataLoadResult.Invalid(
                         DeviceIdentityUnavailableReason.METADATA_MALFORMED,
                     )
-            } else {
-                null
-            }
+            } else null
             MetadataLoadResult.Present(
                 StoredIdentityMetadata(schema, state, alias, fingerprint),
             )
@@ -762,10 +694,8 @@ internal class NoBackupDeviceIdentityMetadataRepository(context: Context) :
     private fun write(json: JSONObject) {
         val output = atomicFile.startWrite()
         try {
-            output.writer(Charsets.UTF_8).use { writer ->
-                writer.write(json.toString())
-                writer.flush()
-            }
+            output.write(json.toString().toByteArray(Charsets.UTF_8))
+            output.flush()
             atomicFile.finishWrite(output)
         } catch (error: Exception) {
             atomicFile.failWrite(output)
@@ -774,18 +704,16 @@ internal class NoBackupDeviceIdentityMetadataRepository(context: Context) :
     }
 
     private companion object {
-        const val FILE_NAME = "device_identity_v1.json"
+        const val DEFAULT_FILE_NAME = "device_identity_v1.json"
     }
 }
 ```
 
-If `finishWrite()` is reached after `use` has already closed the stream on the targeted Android API implementation, adjust the minimal code to write bytes directly to the returned stream, flush, and let `AtomicFile.finishWrite(output)` own the final close. Preserve atomic replacement semantics; do not replace `AtomicFile` with ordinary `File.writeText`.
-
 - [ ] **Step 4: Add unsupported-schema and READY round-trip tests**
 
-Add tests that write schema `2` and expect `METADATA_UNSUPPORTED`, and that call `writeReady()` with a canonical fingerprint and verify exact round-trip.
+Add one test that writes JSON with `schema_version=2` and expects `METADATA_UNSUPPORTED`, and one that calls `writeReady()` with a canonical fingerprint and verifies exact round-trip.
 
-- [ ] **Step 5: Run instrumentation tests and verify metadata GREEN**
+- [ ] **Step 5: Run instrumentation tests**
 
 ```bash
 ./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
@@ -803,43 +731,39 @@ git commit -m "feat: persist device identity metadata atomically"
 
 ---
 
-### Task 5: Implement real Android Keystore P-256 identity operations
+### Task 5: Implement the Android Keystore adapter
 
 **Files:**
 - Create: `data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidKeystoreDeviceIdentityCrypto.kt`
 - Extend: `data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt`
 
 **Interfaces:**
-- Implements `DeviceIdentityCrypto`.
-- Android Keystore provider: `AndroidKeyStore`.
-- Curve: `secp256r1`.
-- Digest/signature: SHA-256 / `SHA256withECDSA`.
+- Implements `DeviceIdentityCrypto` with AndroidKeyStore, P-256, `SHA256withECDSA`.
 
-- [ ] **Step 1: Add failing Keystore instrumentation tests**
+- [ ] **Step 1: Add failing Keystore tests with unique alias**
 
-Add constants and cleanup:
+Add:
 
 ```kotlin
 private val testAlias = "andy_device_identity_test_${System.nanoTime()}"
 
 @After
 fun cleanupKey() {
-    java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(testAlias)
+    KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(testAlias)
 }
-```
 
-Add these tests:
-
-```kotlin
 @Test
-fun createsNonExportableP256KeyAndStablePublicFingerprint() {
+fun createsNonExportableP256KeyWithStablePublicEncoding() {
     val crypto = AndroidKeystoreDeviceIdentityCrypto()
     crypto.generateKey(testAlias)
     assertTrue(crypto.hasKey(testAlias))
 
-    val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    val privateKey = keyStore.getKey(testAlias, null) as java.security.PrivateKey
+    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val privateKey = keyStore.getKey(testAlias, null) as PrivateKey
     assertEquals(null, privateKey.encoded)
+
+    val publicKey = keyStore.getCertificate(testAlias).publicKey as ECPublicKey
+    assertEquals(256, publicKey.params.curve.field.fieldSize)
 
     val first = crypto.publicKeySubjectPublicKeyInfo(testAlias)
     val second = crypto.publicKeySubjectPublicKeyInfo(testAlias)
@@ -856,7 +780,7 @@ fun sha256WithEcdsaSelfTestSucceeds() {
 }
 ```
 
-- [ ] **Step 2: Run instrumentation and verify RED**
+- [ ] **Step 2: Run and confirm RED**
 
 ```bash
 ./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
@@ -864,9 +788,9 @@ fun sha256WithEcdsaSelfTestSucceeds() {
 
 Expected: compile failure because `AndroidKeystoreDeviceIdentityCrypto` does not exist.
 
-- [ ] **Step 3: Implement the Keystore adapter**
+- [ ] **Step 3: Implement the adapter**
 
-Create:
+`AndroidKeystoreDeviceIdentityCrypto.kt`:
 
 ```kotlin
 package io.github.escossio.andy.data.deviceidentity
@@ -903,8 +827,7 @@ internal class AndroidKeystoreDeviceIdentityCrypto : DeviceIdentityCrypto {
 
     override fun publicKeySubjectPublicKeyInfo(keyAlias: String): ByteArray =
         requireNotNull(keyStore().getCertificate(keyAlias)) { "Device identity certificate missing" }
-            .publicKey
-            .encoded
+            .publicKey.encoded
 
     override fun signForSelfTest(keyAlias: String, challenge: ByteArray): ByteArray {
         val privateKey = requireNotNull(keyStore().getKey(keyAlias, null) as? java.security.PrivateKey) {
@@ -940,26 +863,17 @@ internal class AndroidKeystoreDeviceIdentityCrypto : DeviceIdentityCrypto {
 }
 ```
 
-Do not call `setIsStrongBoxBacked(true)`. Do not request per-use user authentication.
+Do not call `setIsStrongBoxBacked(true)`.
 
-- [ ] **Step 4: Add a curve assertion using the generated public EC key**
-
-In the instrumentation test, cast the certificate public key to `java.security.interfaces.ECPublicKey` and assert:
-
-```kotlin
-val publicKey = keyStore.getCertificate(testAlias).publicKey as java.security.interfaces.ECPublicKey
-assertEquals(256, publicKey.params.curve.field.fieldSize)
-```
-
-- [ ] **Step 5: Run instrumentation and verify GREEN**
+- [ ] **Step 4: Run instrumentation tests and confirm GREEN**
 
 ```bash
 ./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
 ```
 
-Expected: Keystore tests PASS.
+Expected: all metadata and Keystore tests PASS.
 
-- [ ] **Step 6: Commit Task 5**
+- [ ] **Step 5: Commit Task 5**
 
 ```bash
 git add data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidKeystoreDeviceIdentityCrypto.kt \
@@ -969,45 +883,60 @@ git commit -m "feat: add Android Keystore device identity"
 
 ---
 
-### Task 6: Compose the production manager and prove crash recovery/fail-closed behavior on Android
+### Task 6: Compose the production manager and prove recovery/fail-closed behavior
 
 **Files:**
 - Create: `data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityFactory.kt`
 - Extend: `data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt`
 
 **Interfaces:**
-- Produces `AndroidDeviceIdentityFactory.create(context): DeviceIdentityManager`.
-- Uses secure random 32-byte challenges.
+- `AndroidDeviceIdentityFactory.create(context): DeviceIdentityManager` uses production alias/file name.
+- Instrumentation tests construct `DeviceIdentityEngine` directly with synthetic alias and synthetic metadata filename using the explicit injection points already defined.
 
 - [ ] **Step 1: Add failing end-to-end instrumentation tests**
 
-Add tests with an isolated alias strategy exposed through an internal factory overload, or construct `DeviceIdentityEngine` directly from internal repository/crypto adapters for test aliases. Cover these exact behaviors:
+Add these three tests:
 
-```kotlin
-@Test fun firstEnsureCreatesIdentityAndSecondManagerReturnsSameFingerprint()
-@Test fun provisioningMetadataWithExistingKeyRecoversToReady()
-@Test fun establishedReadyIdentityWithDeletedKeyFailsClosedWithoutReplacement()
+```text
+firstEnsureCreatesIdentityAndSecondManagerReturnsSameFingerprint
+provisioningMetadataWithExistingKeyRecoversToReady
+establishedReadyIdentityWithDeletedKeyFailsClosedWithoutReplacement
 ```
 
-For the key-loss test:
+For all three tests, construct:
 
-1. provision to `Ready`;
-2. delete the test alias directly from `AndroidKeyStore`;
-3. call `ensureIdentity()` again using the same metadata;
-4. assert `Unavailable(ESTABLISHED_KEY_MISSING)`;
-5. assert the alias remains absent after the call.
+```kotlin
+val alias = "andy_device_identity_e2e_${System.nanoTime()}"
+val fileName = "device_identity_e2e_${System.nanoTime()}.json"
+val repository = NoBackupDeviceIdentityMetadataRepository(context, fileName)
+val crypto = AndroidKeystoreDeviceIdentityCrypto()
+val engine = DeviceIdentityEngine(
+    metadataRepository = repository,
+    crypto = crypto,
+    challengeGenerator = { ByteArray(32) { 7 } },
+    keyAlias = alias,
+)
+```
 
-- [ ] **Step 2: Run instrumentation and verify RED for the production factory path**
+For the first test, call `engine.ensureIdentity()`, then create a second `DeviceIdentityEngine` with the same repository, crypto, alias and a different deterministic challenge and assert the same `Ready(fingerprint)`.
+
+For provisioning recovery, call `repository.writeProvisioning(alias)`, then `crypto.generateKey(alias)`, then assert `ensureIdentity()` returns `Ready` without a second generation attempt.
+
+For key loss, provision to `Ready`, delete `alias` directly from `AndroidKeyStore`, call `ensureIdentity()` again, assert `Unavailable(ESTABLISHED_KEY_MISSING)`, and assert `crypto.hasKey(alias)` remains false.
+
+Delete the synthetic alias and metadata file at the end of each test with `try/finally`.
+
+- [ ] **Step 2: Run instrumentation and confirm current tests execute**
 
 ```bash
 ./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
 ```
 
-Expected: failure because `AndroidDeviceIdentityFactory` does not exist.
+The end-to-end tests may compile before the factory exists because they use explicit construction. Keep them RED until the assertions are satisfied; do not weaken the assertions.
 
 - [ ] **Step 3: Implement the production factory**
 
-Create:
+`AndroidDeviceIdentityFactory.kt`:
 
 ```kotlin
 package io.github.escossio.andy.data.deviceidentity
@@ -1023,39 +952,24 @@ object AndroidDeviceIdentityFactory {
         return DeviceIdentityEngine(
             metadataRepository = NoBackupDeviceIdentityMetadataRepository(context.applicationContext),
             crypto = AndroidKeystoreDeviceIdentityCrypto(),
-            challengeGenerator = {
-                ByteArray(32).also(random::nextBytes)
-            },
+            challengeGenerator = { ByteArray(32).also(random::nextBytes) },
         )
     }
 }
 ```
 
-No network or backend dependency is introduced.
-
-- [ ] **Step 4: Complete Android end-to-end instrumentation tests**
-
-Use production classes with synthetic test aliases where isolation requires it. If the production alias constant cannot be safely overridden without adding a public arbitrary constructor, instantiate `DeviceIdentityEngine` directly in tests using the Android repository/crypto classes and a synthetic metadata file/alias variant introduced through package-internal constructor parameters. Any such constructor parameter must remain `internal` to the data module and must not expose a new application API.
-
-- [ ] **Step 5: Run all instrumentation tests**
-
-```bash
-./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
-```
-
-Expected: PASS for metadata, Keystore, recovery, and fail-closed cases.
-
-- [ ] **Step 6: Run core + data JVM tests**
+- [ ] **Step 4: Run all core/data tests**
 
 ```bash
 ./gradlew --no-daemon \
   :core:device-identity:test \
-  :data:device-identity:testDebugUnitTest
+  :data:device-identity:testDebugUnitTest \
+  :data:device-identity:connectedDebugAndroidTest
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task 6**
+- [ ] **Step 5: Commit Task 6**
 
 ```bash
 git add data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityFactory.kt \
@@ -1065,28 +979,24 @@ git commit -m "feat: compose Android device identity manager"
 
 ---
 
-### Task 7: Initialize identity on app launch without changing the UI
+### Task 7: Initialize identity on launch without changing the visible screen
 
 **Files:**
 - Modify: `app/src/main/java/io/github/escossio/andy/MainActivity.kt`
 
 **Interfaces:**
-- Consumes: `AndroidDeviceIdentityFactory.create(applicationContext)` and `DeviceIdentityResult`.
-- Produces bounded startup log events only; retains exact `BOOTSTRAP_TEXT = "Andy"` and existing Compose layout.
+- Consumes `AndroidDeviceIdentityFactory` and typed `DeviceIdentityResult`.
+- Emits only `DEVICE_IDENTITY_READY` or `DEVICE_IDENTITY_UNAVAILABLE:<reason>`.
 
-- [ ] **Step 1: Preserve the current UI contract before editing**
-
-Run:
+- [ ] **Step 1: Run the existing bootstrap UI unit test before editing**
 
 ```bash
 ./gradlew --no-daemon :app:testDebugUnitTest
 ```
 
-Expected: existing `BootstrapTest.bootstrapTextIsAndy` PASS.
+Expected: `BootstrapTest.bootstrapTextIsAndy` PASS.
 
-- [ ] **Step 2: Add startup identity initialization**
-
-Modify `MainActivity.kt` so `onCreate` performs identity initialization before `setContent`, but the Compose code is byte-for-byte semantically unchanged. Use bounded logs only:
+- [ ] **Step 2: Modify `MainActivity.kt` exactly as follows**
 
 ```kotlin
 package io.github.escossio.andy
@@ -1139,9 +1049,9 @@ private fun AndyBootstrap() {
 }
 ```
 
-Do not log `result.fingerprint.value`.
+Do not log the fingerprint.
 
-- [ ] **Step 3: Run app unit test and assembly**
+- [ ] **Step 3: Verify app unit test and APK build**
 
 ```bash
 ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
@@ -1149,18 +1059,15 @@ Do not log `result.fingerprint.value`.
 
 Expected: PASS.
 
-- [ ] **Step 4: Run secret and forbidden-content inspection**
+- [ ] **Step 4: Verify no network or sensitive logging**
 
 ```bash
 python3 scripts/security/scan_secrets.py .
-grep -RInE 'fingerprint\.value|android\.permission\.INTERNET|https?://' \
+grep -RInE 'android\.permission\.INTERNET|https?://|fingerprint\.value' \
   app core/device-identity data/device-identity || true
 ```
 
-Expected:
-- `SECRET_SCAN_PASS`;
-- no fingerprint logging;
-- no network permission or URL introduced by the feature code.
+Expected: `SECRET_SCAN_PASS`; no network permission/URL; no fingerprint logging.
 
 - [ ] **Step 5: Commit Task 7**
 
@@ -1171,18 +1078,15 @@ git commit -m "feat: initialize device identity on launch"
 
 ---
 
-### Task 8: Run the complete exact-frontier verification
+### Task 8: Run the exact-frontier completion suite
 
 **Files:**
-- Verify only; no new files expected.
+- Verify only.
 
 **Interfaces:**
-- Consumes all previous tasks.
-- Produces exact candidate SHA ready for GitHub CI.
+- Produces exact candidate SHA ready for PR CI.
 
-- [ ] **Step 1: Verify the feature diff contains only allowed paths**
-
-Run:
+- [ ] **Step 1: Architecture guard**
 
 ```bash
 python3 scripts/architecture/check_guardrails.py \
@@ -1193,7 +1097,7 @@ python3 scripts/architecture/check_guardrails.py \
 
 Expected: `ARCH_PASS`.
 
-- [ ] **Step 2: Run all JVM tests**
+- [ ] **Step 2: JVM tests**
 
 ```bash
 ./gradlew --no-daemon \
@@ -1204,7 +1108,7 @@ Expected: `ARCH_PASS`.
 
 Expected: PASS.
 
-- [ ] **Step 3: Run real Android instrumentation tests**
+- [ ] **Step 3: Real Android instrumentation**
 
 ```bash
 ./gradlew --no-daemon :data:device-identity:connectedDebugAndroidTest
@@ -1212,7 +1116,7 @@ Expected: PASS.
 
 Expected: PASS on an approved Android emulator/device environment. Notebook is not required.
 
-- [ ] **Step 4: Assemble the debug APK**
+- [ ] **Step 4: Assemble APK**
 
 ```bash
 ./gradlew --no-daemon :app:assembleDebug
@@ -1220,7 +1124,7 @@ Expected: PASS on an approved Android emulator/device environment. Notebook is n
 
 Expected: `app/build/outputs/apk/debug/app-debug.apk` exists.
 
-- [ ] **Step 5: Run repository safeguards**
+- [ ] **Step 5: Repository safeguards**
 
 ```bash
 python3 scripts/security/scan_secrets.py .
@@ -1229,53 +1133,47 @@ git diff --name-only origin/main...HEAD | sort
 git status --short --branch
 ```
 
-Expected: `SECRET_SCAN_PASS`, no whitespace errors, exact frontier paths only, clean worktree.
+Expected: `SECRET_SCAN_PASS`, zero diff errors, only frontier-approved paths, clean worktree.
 
-- [ ] **Step 6: Verify no public arbitrary signing API exists**
-
-Run:
+- [ ] **Step 6: Verify no arbitrary signing API**
 
 ```bash
 grep -RInE 'fun[[:space:]]+sign\(|sign\(bytes|sign\(payload' \
   app core/device-identity data/device-identity || true
 ```
 
-Expected: only the infrastructure SPI method `signForSelfTest` and Android implementation of that exact method may appear; no `DeviceIdentityManager.sign(...)` or general-purpose signing API exists.
+Expected: no general-purpose application signing method. `signForSelfTest` is the only signing capability name.
 
-- [ ] **Step 7: Verify UI code remains unchanged except startup call/imports**
+- [ ] **Step 7: Verify unchanged visual contract**
 
-Inspect `MainActivity.kt` and confirm:
+Confirm `MainActivity.kt` still contains exactly:
 
 ```text
 BOOTSTRAP_TEXT = "Andy"
-Box(fillMaxSize, contentAlignment = Alignment.Center)
+Modifier.fillMaxSize()
+contentAlignment = Alignment.Center
 BasicText(BOOTSTRAP_TEXT)
 ```
 
-No Material components, navigation, buttons, login UI, status text, or recovery UI are added.
-
-- [ ] **Step 8: Commit any test-only corrections made during final verification**
-
-Only if a failing test required a legitimate in-frontier correction, commit it with a narrow message. Otherwise create no extra commit.
+No buttons, status labels, login UI, recovery UI, navigation, or Material components are added.
 
 ---
 
-### Task 9: Push the feature PR and obtain exact-SHA CI proof
+### Task 9: Push the PR and obtain exact-SHA CI proof
 
 **Files:**
-- No additional repository file changes expected.
+- No further edits.
 
 **Interfaces:**
-- Consumes the verified feature branch.
-- Produces reviewable PR and GitHub artifact.
+- Produces reviewable feature PR and APK artifact.
 
-- [ ] **Step 1: Push the feature branch**
+- [ ] **Step 1: Push branch**
 
 ```bash
 git push -u origin feat/android-device-identity-v1
 ```
 
-- [ ] **Step 2: Open the PR**
+- [ ] **Step 2: Open PR**
 
 Title:
 
@@ -1295,9 +1193,7 @@ No Google auth, email challenge, backend enrollment, tenant/session logic, netwo
 Do not merge automatically.
 ```
 
-- [ ] **Step 3: Wait for all five required GitHub checks on the exact candidate SHA**
-
-Expected:
+- [ ] **Step 3: Wait for all five required checks on the exact candidate SHA**
 
 ```text
 architecture-guard = success
@@ -1307,57 +1203,26 @@ android-build = success
 android-instrumentation = success
 ```
 
-`android-build` must show the device-identity module detected and execute:
+`android-build` must show `DEVICE_IDENTITY_MODULE_PRESENT` and execute core/data JVM tests plus app unit test/assembly. `android-instrumentation` must show `DEVICE_IDENTITY_MODULE_PRESENT` and execute `:data:device-identity:connectedDebugAndroidTest`.
+
+- [ ] **Step 4: Verify the APK artifact**
+
+Confirm exactly one `andy-debug-apk` artifact containing `app-debug.apk`, tied to the exact candidate SHA. Capture run id, artifact id, artifact size, expiry, and optionally APK SHA-256 after download.
+
+- [ ] **Step 5: Security review before merge**
+
+Confirm all are absent:
 
 ```text
-:core:device-identity:test
-:data:device-identity:testDebugUnitTest
-:app:testDebugUnitTest
-:app:assembleDebug
-```
-
-`android-instrumentation` must show:
-
-```text
-DEVICE_IDENTITY_MODULE_PRESENT
-:data:device-identity:connectedDebugAndroidTest
-```
-
-- [ ] **Step 4: Verify artifact publication**
-
-Confirm exactly one debug artifact named:
-
-```text
-andy-debug-apk
-```
-
-containing `app-debug.apk`, tied to the exact candidate SHA.
-
-Capture:
-
-```text
-WORKFLOW_RUN_ID
-ARTIFACT_ID
-ARTIFACT_SIZE
-ARTIFACT_EXPIRES_AT
-```
-
-Optionally download the artifact only to compute the APK SHA-256; do not install automatically on the user's phone.
-
-- [ ] **Step 5: Review the PR diff for security invariants**
-
-Confirm:
-
-```text
-network/backend/provider code = none
-INTERNET permission = none
-full fingerprint logging = none
-private key export = none
-StrongBox requirement = none
-biometric requirement = none
-READY auto-regeneration = none
-UI change = none
-feature PR governance mutation = none
+network/backend/provider code
+INTERNET permission
+full fingerprint logging
+private-key export
+StrongBox requirement
+biometric requirement
+READY auto-regeneration
+governance mutation in feature PR
+visual UI change
 ```
 
 - [ ] **Step 6: Stop for explicit human merge approval**
@@ -1394,49 +1259,32 @@ MERGED=NO
 
 ---
 
-### Task 10: Post-approval merge and post-merge main verification
+### Task 10: Merge after approval and verify main
 
 **Files:**
-- No new feature edits.
+- No edits.
 
 **Interfaces:**
-- Consumes explicit human merge authorization and unchanged candidate SHA.
-- Produces a green `main` carrying Device Identity V1.
+- Consumes explicit merge approval and unchanged reviewed head SHA.
+- Produces green `main` carrying Device Identity V1.
 
-- [ ] **Step 1: Freshly verify the PR before merge**
+- [ ] **Step 1: Freshly verify PR state, mergeability, unchanged head, and all five checks**
 
-Confirm:
+Expected: open, mergeable, exact reviewed SHA, all success.
 
-```text
-state = open
-mergeable = true
-head SHA = reviewed candidate SHA
-all five required checks = success
-```
+- [ ] **Step 2: Merge with expected head SHA and no bypass**
 
-- [ ] **Step 2: Merge using expected head SHA**
+Use the repository's existing merge method.
 
-Use the repository's existing merge method. Do not bypass required checks or branch protection.
+- [ ] **Step 3: Wait for all five post-merge checks on the new main SHA**
 
-- [ ] **Step 3: Wait for the new main SHA checks**
+Expected all success.
 
-Required:
+- [ ] **Step 4: Verify post-merge `andy-debug-apk` publication**
 
-```text
-architecture-guard = success
-governance-tests = success
-secret-scan = success
-android-build = success
-android-instrumentation = success
-```
+Expected: artifact exists for the new main SHA.
 
-- [ ] **Step 4: Verify post-merge APK artifact**
-
-Confirm the new main SHA also publishes `andy-debug-apk` successfully.
-
-- [ ] **Step 5: Final completion report**
-
-Report:
+- [ ] **Step 5: Final report**
 
 ```text
 ANDROID_DEVICE_IDENTITY_V1_STATUS=PASS/FAIL
