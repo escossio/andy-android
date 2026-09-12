@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-app-bootstrap-v1",
+  "branch": "feat/android-app-bootstrap-v1",
+  "allowed_paths": [
+    "settings.gradle.kts",
+    "build.gradle.kts",
+    "gradle.properties",
+    "gradle/libs.versions.toml",
+    "gradle/wrapper/gradle-wrapper.properties",
+    "gradle/wrapper/gradle-wrapper.jar",
+    "gradlew",
+    "gradlew.bat",
+    "app/build.gradle.kts",
+    "app/src/main/AndroidManifest.xml",
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "app/src/main/res/values/strings.xml",
+    "app/src/test/java/io/github/escossio/andy/BootstrapTest.kt"
+  ],
+  "required_artifacts": [
+    "settings.gradle.kts",
+    "build.gradle.kts",
+    "gradle/libs.versions.toml",
+    "gradle/wrapper/gradle-wrapper.properties",
+    "gradlew",
+    "app/build.gradle.kts",
+    "app/src/main/AndroidManifest.xml",
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "app/src/test/java/io/github/escossio/andy/BootstrapTest.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "okhttp",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "firebase",
+    "com\\.google\\.android\\.gms",
+    "androidx\\.work",
+    "play-services-location",
+    "home.?assistant",
+    "whatsapp"
+  ]
+}
