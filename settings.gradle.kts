@@ -18,3 +18,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "AndyAndroid"
 include(":app")
+include(":core:device-identity")
+include(":data:device-identity")
