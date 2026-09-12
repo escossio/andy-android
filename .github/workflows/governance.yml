@@ -147,7 +147,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v sdkmanager
-          sdkmanager 'platforms;android-37' 'build-tools;36.0.0'
+          sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'
 
       - name: Build and test exact candidate
         if: steps.android_project.outputs.present == 'true'
@@ -155,3 +155,12 @@ jobs:
         run: |
           set -euo pipefail
           ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+
+      - name: Upload debug APK
+        if: success() && steps.android_project.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: andy-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+          if-no-files-found: error
