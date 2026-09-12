@@ -257,6 +257,20 @@ jobs:
             echo 'ANDROID_PROJECT_NOT_PRESENT'
           fi
 
+      - name: Detect device identity module
+        id: device_identity
+        if: steps.android_project.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f core/device-identity/build.gradle.kts && -f data/device-identity/build.gradle.kts ]]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+            echo 'DEVICE_IDENTITY_MODULE_PRESENT'
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo 'DEVICE_IDENTITY_MODULE_NOT_PRESENT'
+          fi
+
       - name: Install compile SDK and build tools
         if: steps.android_project.outputs.present == 'true'
         shell: bash
@@ -277,6 +291,15 @@ jobs:
         run: |
           set -euo pipefail
           ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+
+      - name: Run device identity JVM tests
+        if: steps.device_identity.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon \
+            :core:device-identity:test \
+            :data:device-identity:testDebugUnitTest
 
       - name: Upload debug APK
         if: success() && steps.android_project.outputs.present == 'true'
