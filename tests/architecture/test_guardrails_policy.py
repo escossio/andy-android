@@ -106,7 +106,46 @@ class GuardPolicyTests(unittest.TestCase):
             with self.subTest(removed=original), self.assertRaises(AssertionError):
                 self.assert_boot_diagnostics(text.replace(original, ''))
 
-    def run_boot_fixture(self, mode):
+    def test_avd_creation_requires_explicit_device_and_discovery(self):
+        job = self.jobs(self.workflow())['android-instrumentation']
+        boot = self.step(job, 'Create and boot API 36 emulator')
+        self.assertNotIn('echo no |', boot)
+        for required in ('timeout -k 1s 10s "$AVDMANAGER" list device -c',
+                         'timeout -k 1s 10s "$AVDMANAGER" list avd -c',
+                         '--device "$DEVICE_ID"',
+                         'NO_SUPPORTED_AVD_DEVICE_DEFINITION',
+                         'AVD_CREATION_POSTCONDITION_FAILED'):
+            self.assertIn(required, boot)
+        self.assertLess(boot.index('list avd -c'), boot.index('"$EMULATOR" \\\n'))
+
+    def test_avd_creation_prefers_pixel(self):
+        status, output = self.run_boot_fixture('success', devices='pixel_xl\npixel\n')
+        self.assertEqual(status, 0, output)
+        self.assertIn('selected-device=pixel\n', output)
+        self.assertIn('fixture-emulator-launched', output)
+
+    def test_avd_creation_falls_back_to_pixel_xl(self):
+        status, output = self.run_boot_fixture('success', devices='pixel_xl\n')
+        self.assertEqual(status, 0, output)
+        self.assertIn('selected-device=pixel_xl\n', output)
+        self.assertIn('fixture-emulator-launched', output)
+
+    def test_avd_creation_rejects_unsupported_devices_before_create(self):
+        status, output = self.run_boot_fixture('success', devices='pixel_2\npixel_xl_extra\n')
+        self.assertNotEqual(status, 0, output)
+        self.assertIn('NO_SUPPORTED_AVD_DEVICE_DEFINITION', output)
+        self.assertNotIn('selected-device=', output)
+        self.assertNotIn('fixture-emulator-launched', output)
+
+    def test_avd_creation_exit_zero_without_exact_avd_never_launches_emulator(self):
+        status, output = self.run_boot_fixture('missing_avd')
+        self.assertNotEqual(status, 0, output)
+        for evidence in ('AVD_CREATION_POSTCONDITION_FAILED', 'pixel',
+                         'andy-ci-api36-other', 'synthetic-avd.ini'):
+            self.assertIn(evidence, output)
+        self.assertNotIn('fixture-emulator-launched', output)
+
+    def run_boot_fixture(self, mode, devices='pixel\npixel_xl\n'):
         job = self.jobs(self.workflow())['android-instrumentation']
         step = self.step(job, 'Create and boot API 36 emulator')
         script = textwrap.dedent(step.split('        run: |\n', 1)[1])
@@ -114,12 +153,31 @@ class GuardPolicyTests(unittest.TestCase):
         script = script.replace('SECONDS + 240', 'SECONDS + 2')
         script = script.replace('3s ', '0.2s ').replace('60s ', '0.2s ')
         script = script.replace('10s ', '0.2s ').replace('sleep 2', 'sleep 0.05')
+        script = script.replace('$HOME/.android/avd', '$RUNNER_TEMP/.android/avd')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / '.android/avd').mkdir(parents=True)
+            (root / '.android/avd/synthetic-avd.ini').touch()
             fixtures = {
                 'cmdline-tools/latest/bin/avdmanager':
-                    'if [[ "$BOOT_FIXTURE" == avd_failure ]]; then exit 9; fi\nexit 0\n',
+                    'case "$*" in\n'
+                    '  "list device -c") printf "%s" "$FIXTURE_DEVICES" ;;\n'
+                    '  "list avd -c")\n'
+                    '    if [[ "$BOOT_FIXTURE" == missing_avd ]]; then echo andy-ci-api36-other;\n'
+                    '    elif [[ -f "$RUNNER_TEMP/selected-device" ]]; then echo andy-ci-api36; fi ;;\n'
+                    '  "create avd "*)\n'
+                    '    if [[ "$BOOT_FIXTURE" == avd_failure ]]; then exit 9; fi\n'
+                    '    while (( $# )); do\n'
+                    '      if [[ "$1" == --device ]]; then\n'
+                    '        printf "selected-device=%s\\n" "$2" > "$RUNNER_TEMP/selected-device"\n'
+                    '        exit 0\n'
+                    '      fi\n'
+                    '      shift\n'
+                    '    done ;;\n'
+                    '  *) exit 2 ;;\n'
+                    'esac\n',
                 'emulator/emulator':
+                    'touch "$RUNNER_TEMP/emulator-launched"\n'
                     'echo synthetic-emulator-log\n'
                     'if [[ "$BOOT_FIXTURE" == early_exit ]]; then exit 1; fi\n'
                     'exec sleep 30\n',
@@ -144,7 +202,7 @@ class GuardPolicyTests(unittest.TestCase):
                 executable.write_text('#!/bin/bash\n' + content)
                 executable.chmod(0o755)
             env = dict(os.environ, ANDROID_SDK_ROOT=temporary, ANDROID_HOME=temporary,
-                       RUNNER_TEMP=temporary, BOOT_FIXTURE=mode)
+                       RUNNER_TEMP=temporary, BOOT_FIXTURE=mode, FIXTURE_DEVICES=devices)
             process = subprocess.Popen(['bash', '-c', script], env=env, cwd=temporary,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, start_new_session=True)
@@ -153,6 +211,10 @@ class GuardPolicyTests(unittest.TestCase):
                     output, _ = process.communicate(timeout=6)
                 except subprocess.TimeoutExpired:
                     self.fail('Boot script exceeded diagnostic fixture deadline: ' + mode)
+                if (root / 'selected-device').exists():
+                    output += (root / 'selected-device').read_text()
+                if (root / 'emulator-launched').exists():
+                    output += 'fixture-emulator-launched\n'
                 return process.returncode, output
             finally:
                 # Kill only the synthetic process group, including its fake emulator.

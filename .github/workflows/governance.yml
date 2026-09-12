@@ -185,10 +185,29 @@ jobs:
             test -e /dev/kvm && ls -l /dev/kvm || true
           }
           trap 'status=$?; if (( status != 0 )); then boot_diagnostics; fi' EXIT
-          echo no | timeout -k 1s 60s "$AVDMANAGER" create avd \
+          AVAILABLE_DEVICES="$(timeout -k 1s 10s "$AVDMANAGER" list device -c)"
+          if grep -qx 'pixel' <<< "$AVAILABLE_DEVICES"; then
+            DEVICE_ID='pixel'
+          elif grep -qx 'pixel_xl' <<< "$AVAILABLE_DEVICES"; then
+            DEVICE_ID='pixel_xl'
+          else
+            echo 'NO_SUPPORTED_AVD_DEVICE_DEFINITION'
+            printf '%s\n' "$AVAILABLE_DEVICES"
+            exit 1
+          fi
+          timeout -k 1s 60s "$AVDMANAGER" create avd \
             --force \
             --name andy-ci-api36 \
-            --package 'system-images;android-36;google_apis;x86_64'
+            --package 'system-images;android-36;google_apis;x86_64' \
+            --device "$DEVICE_ID"
+          AVAILABLE_AVDS="$(timeout -k 1s 10s "$AVDMANAGER" list avd -c)"
+          if ! grep -qx 'andy-ci-api36' <<< "$AVAILABLE_AVDS"; then
+            echo 'AVD_CREATION_POSTCONDITION_FAILED'
+            printf '%s\n' "$AVAILABLE_DEVICES"
+            printf '%s\n' "$AVAILABLE_AVDS"
+            find "$HOME/.android/avd" -maxdepth 2 -type f -print 2>/dev/null || true
+            exit 1
+          fi
           "$EMULATOR" \
             -avd andy-ci-api36 \
             -no-window \
