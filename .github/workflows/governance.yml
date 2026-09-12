@@ -1,0 +1,100 @@
+name: Governance CI
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  governance-tests:
+    name: governance-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Test trusted governance
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Fetch candidate objects only
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head:refs/remotes/origin/guard-candidate"
+          ACTUAL_HEAD_SHA="$(git rev-parse refs/remotes/origin/guard-candidate)"
+          test "$ACTUAL_HEAD_SHA" = "$HEAD_SHA"
+      - name: Scan trusted main
+        if: github.event_name == 'push'
+        run: python -I scripts/security/scan_secrets.py .
+      - name: Scan candidate blobs with trusted scanner
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python -I scripts/security/scan_secrets.py --git-ref "$HEAD_SHA"
+
+  architecture-guard:
+    name: architecture-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Fetch candidate objects only
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head:refs/remotes/origin/guard-candidate"
+          ACTUAL_HEAD_SHA="$(git rev-parse refs/remotes/origin/guard-candidate)"
+          test "$ACTUAL_HEAD_SHA" = "$HEAD_SHA"
+      - name: Validate current policy on main push
+        if: github.event_name == 'push'
+        run: python -I scripts/architecture/check_guardrails.py --policy-self-check
+      - name: Evaluate pull request against trusted base
+        if: github.event_name == 'pull_request_target'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: python -I scripts/architecture/check_guardrails.py --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" --branch "$HEAD_BRANCH"

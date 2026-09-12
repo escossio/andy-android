@@ -1,4 +1,5 @@
 import copy
+from pathlib import Path
 import unittest
 
 from scripts.architecture.check_guardrails import evaluate_frontier, validate_manifest
@@ -11,6 +12,21 @@ def policy():
 
 
 class GuardPolicyTests(unittest.TestCase):
+    def test_workflow_uses_only_trusted_executables(self):
+        text = (Path(__file__).resolve().parents[2] / '.github/workflows/governance.yml').read_text()
+        self.assertIn('  pull_request_target:', text)
+        self.assertNotIn('  pull_request:', text)
+        self.assertIn('permissions:\n  contents: read', text)
+        for forbidden in ['${{ secrets.', ': write', 'eval ', 'git checkout', 'git switch',
+                          'pip install', 'gradlew', 'head.repo']:
+            self.assertNotIn(forbidden, text)
+        self.assertEqual(text.count('persist-credentials: false'), 3)
+        self.assertEqual(text.count('ref: ${{ github.event.pull_request.base.sha || github.sha }}'), 3)
+        self.assertEqual(text.count('test "$ACTUAL_HEAD_SHA" = "$HEAD_SHA"'), 2)
+        self.assertEqual(text.count('"pull/${PR_NUMBER}/head:refs/remotes/origin/guard-candidate"'), 2)
+        self.assertIn('python -I scripts/security/scan_secrets.py --git-ref "$HEAD_SHA"', text)
+        self.assertIn('--base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" --branch "$HEAD_BRANCH"', text)
+
     def test_exact_allowed_path_passes(self):
         self.assertEqual(evaluate_frontier(policy(), ['settings.gradle.kts'], {}), [])
 
