@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 import re
 import unittest
@@ -12,7 +13,132 @@ def policy():
                 forbidden_content_patterns=['retrofit'])
 
 
+DEVICE_IDENTITY_ALLOWED_PATHS = {
+    'settings.gradle.kts',
+    'build.gradle.kts',
+    'gradle/libs.versions.toml',
+    'app/build.gradle.kts',
+    'app/src/main/java/io/github/escossio/andy/MainActivity.kt',
+    'core/device-identity/build.gradle.kts',
+    'core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentity.kt',
+    'core/device-identity/src/main/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngine.kt',
+    'core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceIdentityEngineTest.kt',
+    'core/device-identity/src/test/kotlin/io/github/escossio/andy/core/deviceidentity/DeviceKeyFingerprintTest.kt',
+    'data/device-identity/build.gradle.kts',
+    'data/device-identity/src/main/AndroidManifest.xml',
+    'data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityFactory.kt',
+    'data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/AndroidKeystoreDeviceIdentityCrypto.kt',
+    'data/device-identity/src/main/java/io/github/escossio/andy/data/deviceidentity/NoBackupDeviceIdentityMetadataRepository.kt',
+    'data/device-identity/src/androidTest/java/io/github/escossio/andy/data/deviceidentity/AndroidDeviceIdentityInstrumentationTest.kt',
+}
+
+
+def device_identity_manifest():
+    path = Path(__file__).resolve().parents[2] / '.github/architecture/frontiers/android-device-identity-v1.json'
+    return json.loads(path.read_text())
+
+
 class GuardPolicyTests(unittest.TestCase):
+    def test_android_instrumentation_rejects_privilege_and_emulator_mutations(self):
+        text = self.workflow()
+        self.assert_android_instrumentation_job(text)
+        job = self.jobs(text)['android-instrumentation']
+        mutations = [
+            job.replace('contents: read', 'contents: write'),
+            job.replace('persist-credentials: false', 'persist-credentials: true', 1),
+            job.replace('github.event.pull_request.head.sha', 'github.head_ref'),
+            job.replace("'system-images;android-36;google_apis;x86_64'",
+                        "'system-images;android-35;google_apis;x86_64'"),
+            job.replace(':data:device-identity:connectedDebugAndroidTest', ':app:assembleDebug'),
+            job.replace('SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+                        'SDK_ROOT="/usr/local/lib/android/sdk"', 1),
+            job + '\n      - run: sudo true\n',
+            job + '\n      - run: ssh synthetic.invalid\n',
+        ]
+        for index, mutation in enumerate(mutations):
+            candidate = text.replace(job, mutation, 1)
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                self.assert_android_instrumentation_job(candidate)
+
+    def assert_android_instrumentation_job(self, text):
+        jobs = self.jobs(text)
+        self.assertIn('android-instrumentation', jobs)
+        job = jobs['android-instrumentation']
+        self.assertIn('name: android-instrumentation', job)
+        self.assertIn('runs-on: ubuntu-latest', job)
+        self.assertIn('timeout-minutes: 35', job)
+        permissions = re.search(r'^    permissions:\n(.*?)^    steps:', job,
+                                flags=re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(permissions)
+        self.assertEqual(permissions[1].strip(), 'contents: read')
+        checkouts = self.checkouts(job)
+        self.assertEqual(len(checkouts), 2)
+        self.assertIn('ref: ${{ github.sha }}', checkouts[0])
+        self.assertIn('ref: ${{ github.event.pull_request.head.sha }}', checkouts[1])
+        for checkout in checkouts:
+            self.assertEqual(checkout.count('persist-credentials: false'), 1)
+            self.assertIn('fetch-depth: 1', checkout)
+        self.assertIn("if: github.event_name == 'push'", checkouts[0])
+        self.assertIn("if: github.event_name == 'pull_request_target'", checkouts[1])
+        self.assertIn("java-version: '17'", job)
+        self.assertIn('distribution: temurin', job)
+        self.assertNotRegex(job, r'\$\{\{\s*secrets\b|:\s*write(?:-all)?\b')
+        detection = self.step(job, 'Detect device identity module')
+        self.assertIn('[[ -f data/device-identity/build.gradle.kts ]]', detection)
+        self.assertIn('DEVICE_IDENTITY_MODULE_NOT_PRESENT', detection)
+        for name in ('Install Android emulator dependencies', 'Create and boot API 36 emulator',
+                     'Run real Android Keystore instrumentation tests'):
+            self.assert_step_condition(self.step(job, name),
+                                       "steps.device_identity.outputs.present == 'true'")
+        self.assert_step_condition(self.step(job, 'Stop emulator'),
+                                   "always() && steps.device_identity.outputs.present == 'true'")
+        for required in (
+            'data/device-identity/build.gradle.kts',
+            'DEVICE_IDENTITY_MODULE_PRESENT',
+            'SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+            'cmdline-tools/latest/bin/sdkmanager',
+            'cmdline-tools/latest/bin/avdmanager',
+            "'platforms;android-37.0'",
+            "'build-tools;36.0.0'",
+            "'system-images;android-36;google_apis;x86_64'",
+            'andy-ci-api36',
+            'sys.boot_completed',
+            ':data:device-identity:connectedDebugAndroidTest',
+            'emulator -kill',
+        ):
+            self.assertIn(required, job)
+        for forbidden in (
+            'secrets.', 'contents: write', 'id-token:', 'sudo ', 'apt-get ',
+            'setup-android', 'reactivecircus', 'self-hosted', 'ssh ', 'note',
+            '/usr/local/lib/android/sdk', 'GITHUB_PATH', 'export PATH=',
+            'continue-on-error:', 'deploy', 'publish', 'signing',
+        ):
+            self.assertNotIn(forbidden, job)
+
+    def test_android_instrumentation_has_separate_unprivileged_boundary(self):
+        self.assert_android_instrumentation_job(self.workflow())
+
+    def test_device_identity_frontier_rejects_unlisted_paths(self):
+        manifest = device_identity_manifest()
+        errors = evaluate_frontier(manifest, ['README.md'], {})
+        self.assertIn('ARCH_GOVERNANCE_MUTATION:README.md', errors)
+
+    def test_device_identity_frontier_is_exact(self):
+        manifest = device_identity_manifest()
+        self.assertEqual(manifest['schema_version'], 1)
+        self.assertEqual(manifest['frontier_id'], 'android-device-identity-v1')
+        self.assertEqual(manifest['branch'], 'feat/android-device-identity-v1')
+        self.assertEqual(set(manifest['allowed_paths']), DEVICE_IDENTITY_ALLOWED_PATHS)
+        self.assertEqual(set(manifest['required_artifacts']), DEVICE_IDENTITY_ALLOWED_PATHS)
+        for forbidden in (
+            'retrofit', 'okhttp', 'ktor-client', 'dagger', 'hilt',
+            'androidx\\.room', 'firebase', 'com\\.google\\.android\\.gms',
+            'androidx\\.work', 'play-services-location', 'home.?assistant',
+            'whatsapp', 'android\\.permission\\.INTERNET',
+        ):
+            self.assertIn(forbidden, manifest['forbidden_content_patterns'])
+        self.assertEqual(validate_manifest(manifest), [])
+
     def workflow(self):
         return (Path(__file__).resolve().parents[2] / '.github/workflows/governance.yml').read_text()
 
@@ -26,6 +152,16 @@ class GuardPolicyTests(unittest.TestCase):
     def checkouts(self, job):
         steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
         return [step for step in steps if 'uses: actions/checkout@' in step]
+
+    def step(self, job, name):
+        steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
+        matches = [step for step in steps if step.startswith('name: ' + name + '\n')]
+        self.assertEqual(len(matches), 1, name)
+        return matches[0]
+
+    def assert_step_condition(self, step, condition):
+        self.assertEqual(re.findall(r'^        if: (.*)$', step, flags=re.MULTILINE),
+                         [condition])
 
     def assert_trusted_jobs(self, text):
         self.assertIn('  pull_request_target:', text)
@@ -93,14 +229,31 @@ class GuardPolicyTests(unittest.TestCase):
         for forbidden in ('/usr/local/lib/android/sdk', 'GITHUB_PATH', 'sudo ',
                           'apt-get ', 'setup-android', 'export PATH='):
             self.assertNotIn(forbidden, job)
-        self.assertEqual(job.count("if: steps.android_project.outputs.present == 'true'"), 2)
+        for name in ('Install compile SDK and build tools', 'Build and test exact candidate',
+                     'Detect device identity module'):
+            self.assert_step_condition(self.step(job, name),
+                                       "steps.android_project.outputs.present == 'true'")
+        detection = self.step(job, 'Detect device identity module')
+        self.assertIn('[[ -f core/device-identity/build.gradle.kts && '
+                      '-f data/device-identity/build.gradle.kts ]]', detection)
+        self.assertIn('DEVICE_IDENTITY_MODULE_PRESENT', detection)
+        self.assertIn('DEVICE_IDENTITY_MODULE_NOT_PRESENT', detection)
+        jvm_tests = self.step(job, 'Run device identity JVM tests')
+        self.assert_step_condition(jvm_tests,
+                                   "steps.device_identity.outputs.present == 'true'")
+        self.assertIn(':core:device-identity:test', jvm_tests)
+        self.assertIn(':data:device-identity:testDebugUnitTest', jvm_tests)
+        self.assertLess(job.index(self.step(job, 'Build and test exact candidate')),
+                        job.index(jvm_tests))
         self.assertIn('./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug', job)
         steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
         uploads = [step for step in steps if 'uses: actions/upload-artifact@' in step]
         self.assertEqual(len(uploads), 1)
         upload = uploads[0]
         self.assertIn('uses: actions/upload-artifact@v4', upload)
-        self.assertIn("if: success() && steps.android_project.outputs.present == 'true'", upload)
+        self.assert_step_condition(upload,
+                                   "success() && steps.android_project.outputs.present == 'true'")
+        self.assertLess(job.index(jvm_tests), job.index(upload))
         self.assertEqual(upload.split('        with:\n', 1)[1].strip(),
                          'name: andy-debug-apk\n'
                          '          path: app/build/outputs/apk/debug/app-debug.apk\n'
@@ -194,6 +347,32 @@ class GuardPolicyTests(unittest.TestCase):
         for index, mutation in enumerate(mutations):
             with self.subTest(mutation=index), self.assertRaises(AssertionError):
                 self.assert_android_build_job(mutation)
+
+    def test_android_build_rejects_weakened_step_conditions(self):
+        text = self.workflow()
+        self.assert_android_build_job(text)
+        job = self.jobs(text)['android-build']
+        for name in ('Install compile SDK and build tools', 'Build and test exact candidate',
+                     'Detect device identity module', 'Run device identity JVM tests',
+                     'Upload debug APK'):
+            step = self.step(job, name)
+            for replacement in ('', '        if: always()'):
+                weakened = re.sub(r'^        if: .*$', replacement, step, flags=re.MULTILINE)
+                with self.subTest(step=name, condition=replacement), self.assertRaises(AssertionError):
+                    self.assert_android_build_job(text.replace(step, weakened, 1))
+
+    def test_android_build_rejects_incomplete_device_identity_jvm_gate(self):
+        text = self.workflow()
+        self.assert_android_build_job(text)
+        job = self.jobs(text)['android-build']
+        mutations = [
+            job.replace(' && -f data/device-identity/build.gradle.kts', ''),
+            job.replace(':core:device-identity:test', ':app:testDebugUnitTest'),
+            job.replace(':data:device-identity:testDebugUnitTest', ':app:testDebugUnitTest'),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                self.assert_android_build_job(text.replace(job, mutation, 1))
 
     def test_exact_allowed_path_passes(self):
         self.assertEqual(evaluate_frontier(policy(), ['settings.gradle.kts'], {}), [])
