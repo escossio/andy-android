@@ -13,9 +13,49 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.security.KeyStore
+import java.security.PrivateKey
+import java.security.interfaces.ECPublicKey
 
 @RunWith(AndroidJUnit4::class)
 class AndroidDeviceIdentityInstrumentationTest {
+    private val testAlias = "andy_device_identity_test_${System.nanoTime()}"
+
+    @After
+    fun cleanupKey() {
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(testAlias)
+    }
+
+    @Test
+    fun createsNonExportableP256KeyWithStablePublicEncoding() {
+        val crypto = AndroidKeystoreDeviceIdentityCrypto()
+        crypto.generateKey(testAlias)
+        assertTrue(crypto.hasKey(testAlias))
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val privateKey = keyStore.getKey(testAlias, null) as PrivateKey
+        assertEquals(null, privateKey.encoded)
+        val publicKey = keyStore.getCertificate(testAlias).publicKey as ECPublicKey
+        assertEquals(256, publicKey.params.curve.field.fieldSize)
+        val first = crypto.publicKeySubjectPublicKeyInfo(testAlias)
+        val second = crypto.publicKeySubjectPublicKeyInfo(testAlias)
+        assertTrue(first.contentEquals(second))
+        assertTrue(publicKey.encoded.contentEquals(first))
+        assertEquals(
+            DeviceKeyFingerprint.fromSubjectPublicKeyInfo(first),
+            DeviceKeyFingerprint.fromSubjectPublicKeyInfo(second),
+        )
+    }
+
+    @Test
+    fun sha256WithEcdsaSelfTestSucceeds() {
+        val crypto = AndroidKeystoreDeviceIdentityCrypto()
+        crypto.generateKey(testAlias)
+        val challenge = ByteArray(32) { index -> index.toByte() }
+        val signature = crypto.signForSelfTest(testAlias, challenge)
+        assertTrue(crypto.verifySelfTest(testAlias, challenge, signature))
+        assertTrue(!crypto.verifySelfTest(testAlias, ByteArray(32) { 42 }, signature))
+    }
+
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val testFileName = "device_identity_test_${System.nanoTime()}.json"
     private val metadataFile get() = File(context.noBackupFilesDir, testFileName)
