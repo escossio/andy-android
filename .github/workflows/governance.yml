@@ -166,6 +166,7 @@ jobs:
 
       - name: Create and boot API 36 emulator
         if: steps.device_identity.outputs.present == 'true'
+        timeout-minutes: 7
         shell: bash
         run: |
           set -euo pipefail
@@ -173,7 +174,18 @@ jobs:
           AVDMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/avdmanager"
           ADB="$SDK_ROOT/platform-tools/adb"
           EMULATOR="$SDK_ROOT/emulator/emulator"
-          echo no | "$AVDMANAGER" create avd \
+          boot_diagnostics() {
+            echo "=== emulator process ==="
+            ps -p "${EMULATOR_PID:-$$}" -o pid,ppid,stat,args || true
+            echo "=== adb devices ==="
+            timeout -k 1s 10s "$ADB" devices -l || true
+            echo "=== emulator log ==="
+            timeout -k 1s 10s cat "$RUNNER_TEMP/andy-emulator.log" || true
+            echo "=== host virtualization ==="
+            test -e /dev/kvm && ls -l /dev/kvm || true
+          }
+          trap 'status=$?; if (( status != 0 )); then boot_diagnostics; fi' EXIT
+          echo no | timeout -k 1s 60s "$AVDMANAGER" create avd \
             --force \
             --name andy-ci-api36 \
             --package 'system-images;android-36;google_apis;x86_64'
@@ -186,17 +198,28 @@ jobs:
             -wipe-data \
             -gpu swiftshader_indirect \
             > "$RUNNER_TEMP/andy-emulator.log" 2>&1 &
-          "$ADB" wait-for-device
+          EMULATOR_PID=$!
+          boot_deadline=$((SECONDS + 240))
           booted=''
-          for attempt in $(seq 1 120); do
-            booted="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+          while (( SECONDS < boot_deadline )); do
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              echo 'EMULATOR_EXITED_BEFORE_BOOT'
+              exit 1
+            fi
+            if timeout -k 1s 3s "$ADB" wait-for-device; then
+              booted="$(timeout -k 1s 3s "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            fi
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              echo 'EMULATOR_EXITED_BEFORE_BOOT'
+              exit 1
+            fi
             if [[ "$booted" == '1' ]]; then
               break
             fi
             sleep 2
           done
           if [[ "$booted" != '1' ]]; then
-            cat "$RUNNER_TEMP/andy-emulator.log"
+            echo 'EMULATOR_BOOT_TIMEOUT'
             exit 1
           fi
 
