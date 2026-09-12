@@ -1,5 +1,6 @@
 import copy
 from pathlib import Path
+import re
 import unittest
 
 from scripts.architecture.check_guardrails import evaluate_frontier, validate_manifest
@@ -12,20 +13,119 @@ def policy():
 
 
 class GuardPolicyTests(unittest.TestCase):
-    def test_workflow_uses_only_trusted_executables(self):
-        text = (Path(__file__).resolve().parents[2] / '.github/workflows/governance.yml').read_text()
+    def workflow(self):
+        return (Path(__file__).resolve().parents[2] / '.github/workflows/governance.yml').read_text()
+
+    def jobs(self, text):
+        sections = re.split(r'^  ([a-z][a-z-]*):\s*$', text.split('\njobs:\n', 1)[1],
+                            flags=re.MULTILINE)
+        names = sections[1::2]
+        self.assertEqual(len(names), len(set(names)))
+        return dict(zip(names, sections[2::2]))
+
+    def checkouts(self, job):
+        steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
+        return [step for step in steps if 'uses: actions/checkout@' in step]
+
+    def assert_trusted_jobs(self, text):
         self.assertIn('  pull_request_target:', text)
         self.assertNotIn('  pull_request:', text)
         self.assertIn('permissions:\n  contents: read', text)
-        for forbidden in ['${{ secrets.', ': write', 'eval ', 'git checkout', 'git switch',
-                          'pip install', 'gradlew', 'head.repo']:
-            self.assertNotIn(forbidden, text)
-        self.assertEqual(text.count('persist-credentials: false'), 3)
-        self.assertEqual(text.count('ref: ${{ github.event.pull_request.base.sha || github.sha }}'), 3)
-        self.assertEqual(text.count('test "$ACTUAL_HEAD_SHA" = "$HEAD_SHA"'), 2)
-        self.assertEqual(text.count('"pull/${PR_NUMBER}/head:refs/remotes/origin/guard-candidate"'), 2)
-        self.assertIn('python -I scripts/security/scan_secrets.py --git-ref "$HEAD_SHA"', text)
-        self.assertIn('--base-ref "$BASE_SHA" --head-ref "$HEAD_SHA" --branch "$HEAD_BRANCH"', text)
+        self.assertNotRegex(text, r'\$\{\{\s*secrets\b')
+        self.assertNotRegex(text, r':\s*write(?:-all)?\b')
+        jobs = self.jobs(text)
+        for name in ('governance-tests', 'secret-scan', 'architecture-guard'):
+            job = jobs[name]
+            self.assertIn('name: ' + name, job)
+            checkouts = self.checkouts(job)
+            self.assertEqual(len(checkouts), 1)
+            self.assertIn('ref: ${{ github.event.pull_request.base.sha || github.sha }}',
+                          checkouts[0])
+            self.assertEqual(checkouts[0].count('persist-credentials: false'), 1)
+            for forbidden in ('ref: ${{ github.event.pull_request.head.sha }}',
+                              'git checkout', 'git switch', 'gradlew', 'eval ',
+                              'pip install', 'head.repo', 'BASH_ENV', 'PYTHONPATH'):
+                self.assertNotIn(forbidden, job)
+        for name in ('secret-scan', 'architecture-guard'):
+            job = jobs[name]
+            self.assertIn('test "$ACTUAL_HEAD_SHA" = "$HEAD_SHA"', job)
+            self.assertIn('"pull/${PR_NUMBER}/head:refs/remotes/origin/guard-candidate"', job)
+        self.assertIn('python -m unittest discover -s tests -p', jobs['governance-tests'])
+        self.assertIn('python -I scripts/security/scan_secrets.py --git-ref "$HEAD_SHA"',
+                      jobs['secret-scan'])
+        self.assertIn('python -I scripts/architecture/check_guardrails.py --base-ref "$BASE_SHA" '
+                      '--head-ref "$HEAD_SHA" --branch "$HEAD_BRANCH"', jobs['architecture-guard'])
+
+    def assert_android_build_job(self, text):
+        jobs = self.jobs(text)
+        self.assertIn('android-build', jobs)
+        job = jobs['android-build']
+        self.assertIn('name: android-build', job)
+        self.assertIn('runs-on: ubuntu-latest', job)
+        self.assertIn('timeout-minutes: 25', job)
+        permissions = re.search(r'^    permissions:\n(.*?)^    steps:', job,
+                                flags=re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(permissions)
+        self.assertEqual(permissions[1].strip(), 'contents: read')
+        checkouts = self.checkouts(job)
+        self.assertEqual(len(checkouts), 2)
+        for checkout, event, ref in zip(checkouts, ('push', 'pull_request_target'),
+                                        ('github.sha', 'github.event.pull_request.head.sha')):
+            self.assertIn("if: github.event_name == '" + event + "'", checkout)
+            self.assertIn('ref: ${{ ' + ref + ' }}', checkout)
+            self.assertEqual(checkout.count('persist-credentials: false'), 1)
+        self.assertIn('uses: actions/setup-java@v4', job)
+        self.assertIn('distribution: temurin', job)
+        self.assertIn("java-version: '17'", job)
+        self.assertIn('[[ -x ./gradlew && -f ./settings.gradle.kts && -f ./app/build.gradle.kts ]]', job)
+        self.assertIn('ANDROID_PROJECT_NOT_PRESENT', job)
+        self.assertIn("sdkmanager 'platforms;android-37' 'build-tools;36.0.0'", job)
+        self.assertEqual(job.count("if: steps.android_project.outputs.present == 'true'"), 2)
+        self.assertIn('./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug', job)
+        self.assertNotRegex(job, r'\$\{\{\s*secrets\b|:\s*write(?:-all)?\b')
+        for forbidden in ('GH_TOKEN', 'GITHUB_TOKEN', 'signing', 'deploy', 'publish',
+                          'id-token', 'ssh', 'note', 'self-hosted', 'attention-router',
+                          'BASH_ENV', 'PYTHONPATH', 'environment:', 'env:', 'cache:'):
+            self.assertNotIn(forbidden, job)
+
+    def test_workflow_keeps_security_jobs_base_trusted(self):
+        self.assert_trusted_jobs(self.workflow())
+
+    def test_android_build_has_separate_unprivileged_boundary(self):
+        self.assert_android_build_job(self.workflow())
+
+    def test_trusted_boundary_rejects_candidate_execution_mutations(self):
+        text = self.workflow()
+        mutations = [
+            text.replace('github.event.pull_request.base.sha || github.sha',
+                         'github.event.pull_request.head.sha', 1),
+            text.replace('persist-credentials: false', 'persist-credentials: true', 1),
+            text.replace('run: python -m unittest', 'run: ./gradlew # python -m unittest', 1),
+            text.replace('contents: read', 'contents: write', 1),
+            text.replace('python -I scripts/security/scan_secrets.py --git-ref "$HEAD_SHA"',
+                         'python candidate/scripts/security/scan_secrets.py'),
+            text.replace('test "$ACTUAL_HEAD_SHA" = "$HEAD_SHA"', 'true', 1),
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutations.index(mutation)), self.assertRaises(AssertionError):
+                self.assert_trusted_jobs(mutation)
+
+    def test_android_build_rejects_privilege_and_checkout_mutations(self):
+        text = self.workflow()
+        self.assert_android_build_job(text)
+        prefix, job = text.split('\n  android-build:', 1)
+        mutations = [
+            job.replace('github.event.pull_request.head.sha', 'github.head_ref'),
+            job.replace('persist-credentials: false', 'persist-credentials: true', 1),
+            job.replace('contents: read', 'contents: write'),
+            job.replace('contents: read', 'contents: read\n      packages: read'),
+            job + '\n        env:\n          TOKEN: ${{ secrets.SYNTHETIC }}\n',
+            job + '\n      - run: ssh synthetic.invalid\n',
+            job.replace(':app:assembleDebug', ':app:publish'),
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutations.index(mutation)), self.assertRaises(AssertionError):
+                self.assert_android_build_job(prefix + '\n  android-build:' + mutation)
 
     def test_exact_allowed_path_passes(self):
         self.assertEqual(evaluate_frontier(policy(), ['settings.gradle.kts'], {}), [])
