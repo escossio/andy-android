@@ -71,7 +71,21 @@ class GuardPolicyTests(unittest.TestCase):
         cleanup = self.step(job, 'Stop emulator')
         self.assert_step_condition(cleanup,
                                    "always() && steps.device_identity.outputs.present == 'true'")
-        self.assertIn('"$SDK_ROOT/platform-tools/adb" emulator -kill || true', cleanup)
+        self.assertIn('"$SDK_ROOT/platform-tools/adb" emu kill || true', cleanup)
+        self.assertNotIn('emulator -kill', cleanup)
+
+    def test_emulator_cleanup_uses_console_command_and_rejects_invalid_form(self):
+        text = self.workflow()
+        job = self.jobs(text)['android-instrumentation']
+        cleanup = self.step(job, 'Stop emulator')
+        expected = '"$SDK_ROOT/platform-tools/adb" emu kill || true'
+        self.assertEqual(cleanup.split('        run: |\n', 1)[1].strip().splitlines()[-1].strip(),
+                         expected)
+        self.assert_boot_diagnostics(text)
+        for invalid in ('"$SDK_ROOT/platform-tools/adb" emulator -kill || true',
+                        'adb emulator -kill || true'):
+            with self.subTest(command=invalid), self.assertRaises(AssertionError):
+                self.assert_boot_diagnostics(text.replace(expected, invalid))
 
     def test_emulator_boot_requires_bounded_observable_wait(self):
         self.assert_boot_diagnostics(self.workflow())
@@ -232,7 +246,7 @@ class GuardPolicyTests(unittest.TestCase):
             'andy-ci-api36',
             'sys.boot_completed',
             ':data:device-identity:connectedDebugAndroidTest',
-            'emulator -kill',
+            'emu kill',
         ):
             self.assertIn(required, job)
         for forbidden in (

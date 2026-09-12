@@ -236,7 +236,7 @@ jobs:
         run: |
           set -u
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          "$SDK_ROOT/platform-tools/adb" emulator -kill || true
+          "$SDK_ROOT/platform-tools/adb" emu kill || true
 
   android-build:
     name: android-build
