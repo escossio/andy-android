@@ -175,19 +175,19 @@ Its only product-visible behavior is:
 - display the text `Andy`;
 - center that text in the available screen.
 
+`MainActivity.kt` defines one package-visible immutable bootstrap constant named `BOOTSTRAP_TEXT` with value `"Andy"`, and the Compose content renders that constant. This constant exists solely to make the JVM unit test prove the exact visible bootstrap text without adding a test-only framework or extra production layer.
+
 No splash experience, navigation graph, custom theme, network call, permission request, background worker, service, receiver, provider integration, or persistent state is introduced.
 
 The app label in resources is `Andy`.
 
-## 9. Unit-test intent
+## 9. Unit-test contract
 
-The unit test is intentionally small. It proves a stable bootstrap invariant that does not require an emulator or Android framework instrumentation.
+`BootstrapTest.kt` is a plain JVM unit test and asserts exactly that `BOOTSTRAP_TEXT == "Andy"`.
 
-The preferred invariant is that the app identity/bootstrap constants or pure bootstrap expectation used by the minimal shell resolve to the expected product name `Andy` without adding extra production abstractions solely for testing.
+The test adds no instrumentation framework, emulator dependency, Robolectric, DI framework, or extra production abstraction. It exists to prove that the `app` unit-test pipeline is wired and that the exact bootstrap text rendered by the shell is stable.
 
-If that exact test shape would require unnecessary production code, the implementation may instead use the smallest JVM unit test that proves the module test pipeline is wired and deterministic. It must not add an instrumentation-test directory outside the existing frontier.
-
-The frontier succeeds only if `testDebugUnitTest` passes.
+The frontier succeeds only if `:app:testDebugUnitTest` passes.
 
 ## 10. GitHub Android build check
 
