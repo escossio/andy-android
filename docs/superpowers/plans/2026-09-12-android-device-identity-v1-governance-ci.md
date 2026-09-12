@@ -4,7 +4,7 @@
 
 **Goal:** Establish the trusted `android-device-identity-v1` feature frontier and a mandatory unprivileged GitHub Actions instrumentation gate before any device-identity feature code is admitted.
 
-**Architecture:** Preserve the existing `pull_request_target` trust model: governance, secret scanning, and architecture checks execute only trusted base code, while candidate Android code executes only in read-only, secret-free jobs. Add a separate `android-instrumentation` job that checks out the exact candidate SHA, detects the future device-identity module, and runs a headless API 36 emulator plus `connectedDebugAndroidTest` when that module exists. The governance PR itself changes only trusted policy/CI files and the frontier manifest.
+**Architecture:** Preserve the existing `pull_request_target` trust model: governance, secret scanning, and architecture checks execute only trusted base code, while candidate Android code executes only in secret-free read-only jobs. Add a separate `android-instrumentation` job that checks out the exact candidate SHA and, when the device-identity module exists, provisions an API 36 emulator with official Android SDK tools and runs `connectedDebugAndroidTest`. Keep the existing `android-build` job and extend it only to run the future core/data JVM tests when those modules exist.
 
 **Tech Stack:** GitHub Actions, Python 3.13 governance tests, Android SDK command-line tools 12.0, Android Emulator API 36 x86_64 Google APIs image, JDK 17, Gradle 9.6.0.
 
@@ -13,48 +13,46 @@
 ## Global Constraints
 
 - Repository: `escossio/andy-android`.
-- Base at plan authoring time: `bf50e67c4191e0ce90596f74e325eb94f206a30a`; execution must fetch and use the then-current `origin/main` without silently rebasing unrelated work.
-- Functional feature branch admitted by this governance change: `feat/android-device-identity-v1`.
-- Governance branch should be `chore/architecture-governance/android-device-identity-v1`.
-- Existing required checks remain: `architecture-guard`, `governance-tests`, `secret-scan`, `android-build`.
-- New required check after governance merge: `android-instrumentation`.
-- Candidate Android jobs remain `permissions: contents: read`, use exact PR head SHA, `fetch-depth: 1`, and `persist-credentials: false`.
-- No secrets, write permissions, OIDC, deployment, signing, publishing, SSH, self-hosted runner, notebook, AGT01, VPS, or infrastructure coupling.
-- No third-party Android emulator action. Use SDK tools directly.
-- Do not use `sudo`, `apt-get`, global PATH mutation, or hardcoded `/usr/local/lib/android/sdk`.
-- Resolve SDK root from `${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}` and tools from that root.
-- Emulator API level: 36. System image package: `system-images;android-36;google_apis;x86_64`.
-- Compile platform remains `platforms;android-37.0`; build tools remain `build-tools;36.0.0`.
-- Do not alter feature code in this governance PR.
-- Do not merge automatically. Stop for explicit human approval at the PR boundary.
+- Governance branch: `chore/architecture-governance/android-device-identity-v1`.
+- Functional branch admitted by this governance change: `feat/android-device-identity-v1`.
+- Preserve required checks `architecture-guard`, `governance-tests`, `secret-scan`, `android-build`.
+- Add required check `android-instrumentation` only after its governance PR is merged and post-merge main is green.
+- Candidate Android jobs use `permissions: contents: read`, exact PR head SHA, `fetch-depth: 1`, and `persist-credentials: false`.
+- No secrets, write permissions, OIDC, deployment, signing, publishing, SSH, self-hosted runners, notebook, AGT01, VPS, or infrastructure coupling.
+- No third-party emulator action.
+- No `sudo`, `apt-get`, global PATH mutation, or hardcoded Android SDK root.
+- Resolve SDK root from `${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}`.
+- Compile platform: `platforms;android-37.0`.
+- Build tools: `build-tools;36.0.0`.
+- Emulator image: `system-images;android-36;google_apis;x86_64`.
+- Do not add or change Android feature source in this governance PR.
+- Do not merge automatically.
 
 ---
 
-## File Structure
+## Exact Governance File Set
 
-**Governance PR changes exactly these paths:**
+- Create: `.github/architecture/frontiers/android-device-identity-v1.json`
+- Modify: `.github/workflows/governance.yml`
+- Modify: `tests/architecture/test_guardrails_policy.py`
 
-- Create: `.github/architecture/frontiers/android-device-identity-v1.json` — exact allowlist and forbidden dependency patterns for the feature PR.
-- Modify: `.github/workflows/governance.yml` — add the unprivileged `android-instrumentation` job; keep the existing four jobs semantically unchanged except for policy-tested coexistence.
-- Modify: `tests/architecture/test_guardrails_policy.py` — TDD assertions and negative mutations for the new frontier and instrumentation job.
-
-No Android application/module source file is changed by this plan.
+No other repository path may change in this plan.
 
 ---
 
-### Task 1: Define the exact trusted feature frontier
+### Task 1: Define the exact feature frontier
 
 **Files:**
 - Create: `.github/architecture/frontiers/android-device-identity-v1.json`
 - Modify: `tests/architecture/test_guardrails_policy.py`
 
 **Interfaces:**
-- Consumes: `validate_manifest()` and `evaluate_frontier()` from `scripts/architecture/check_guardrails.py`.
-- Produces: trusted frontier id `android-device-identity-v1` for branch `feat/android-device-identity-v1` with an exact path allowlist.
+- Consumes: `validate_manifest()` and `evaluate_frontier()`.
+- Produces: trusted frontier `android-device-identity-v1` for branch `feat/android-device-identity-v1`.
 
-- [ ] **Step 1: Add a failing governance test for the new manifest**
+- [ ] **Step 1: Add the failing manifest test**
 
-Add a helper to load the new manifest and a test that asserts the exact branch, exact allowed paths, exact required artifacts, and required forbidden patterns. Use this exact expected path set:
+Add `import json` and the following expected path set to `tests/architecture/test_guardrails_policy.py`:
 
 ```python
 DEVICE_IDENTITY_ALLOWED_PATHS = {
@@ -93,27 +91,23 @@ def test_device_identity_frontier_is_exact(self):
         'retrofit', 'okhttp', 'ktor-client', 'dagger', 'hilt',
         'androidx\\.room', 'firebase', 'com\\.google\\.android\\.gms',
         'androidx\\.work', 'play-services-location', 'home.?assistant',
-        'whatsapp', 'INTERNET', 'device_id',
+        'whatsapp', 'android\\.permission\\.INTERNET',
     ):
         self.assertIn(forbidden, manifest['forbidden_content_patterns'])
     self.assertEqual(validate_manifest(manifest), [])
 ```
 
-Also add `import json` at the top.
-
-- [ ] **Step 2: Run the targeted test and verify RED**
-
-Run:
+- [ ] **Step 2: Run the test and confirm RED**
 
 ```bash
 python3 -m unittest tests.architecture.test_guardrails_policy.GuardPolicyTests.test_device_identity_frontier_is_exact -v
 ```
 
-Expected: FAIL because `.github/architecture/frontiers/android-device-identity-v1.json` does not exist.
+Expected: FAIL because the manifest does not exist.
 
-- [ ] **Step 3: Create the exact frontier manifest**
+- [ ] **Step 3: Create the frontier manifest**
 
-Create `.github/architecture/frontiers/android-device-identity-v1.json` with this content:
+Create `.github/architecture/frontiers/android-device-identity-v1.json`:
 
 ```json
 {
@@ -169,25 +163,12 @@ Create `.github/architecture/frontiers/android-device-identity-v1.json` with thi
     "play-services-location",
     "home.?assistant",
     "whatsapp",
-    "android.permission.INTERNET",
-    "device_id"
+    "android\\.permission\\.INTERNET"
   ]
 }
 ```
 
-- [ ] **Step 4: Run the targeted test and verify GREEN**
-
-Run:
-
-```bash
-python3 -m unittest tests.architecture.test_guardrails_policy.GuardPolicyTests.test_device_identity_frontier_is_exact -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Add a negative allowlist test**
-
-Add:
+- [ ] **Step 4: Add the out-of-frontier negative test**
 
 ```python
 def test_device_identity_frontier_rejects_unlisted_paths(self):
@@ -196,9 +177,7 @@ def test_device_identity_frontier_rejects_unlisted_paths(self):
     self.assertIn('ARCH_GOVERNANCE_MUTATION:README.md', errors)
 ```
 
-- [ ] **Step 6: Run the two frontier tests**
-
-Run:
+- [ ] **Step 5: Run both tests and confirm GREEN**
 
 ```bash
 python3 -m unittest \
@@ -206,9 +185,9 @@ python3 -m unittest \
   tests.architecture.test_guardrails_policy.GuardPolicyTests.test_device_identity_frontier_rejects_unlisted_paths -v
 ```
 
-Expected: 2 tests PASS.
+Expected: PASS.
 
-- [ ] **Step 7: Commit Task 1**
+- [ ] **Step 6: Commit Task 1**
 
 ```bash
 git add .github/architecture/frontiers/android-device-identity-v1.json tests/architecture/test_guardrails_policy.py
@@ -217,19 +196,19 @@ git commit -m "chore: define Android device identity frontier"
 
 ---
 
-### Task 2: Add the unprivileged Android instrumentation CI job
+### Task 2: Add the read-only `android-instrumentation` job
 
 **Files:**
 - Modify: `.github/workflows/governance.yml`
 - Modify: `tests/architecture/test_guardrails_policy.py`
 
 **Interfaces:**
-- Consumes: exact candidate SHA for PRs; trusted main SHA for pushes; Android SDK root variables supplied by GitHub-hosted Ubuntu.
-- Produces: required check context `android-instrumentation`.
+- Produces GitHub check context `android-instrumentation`.
+- Runs candidate instrumentation only if `data/device-identity/build.gradle.kts` exists.
 
-- [ ] **Step 1: Add a failing test helper for the instrumentation job**
+- [ ] **Step 1: Add the failing job policy helper**
 
-Add this helper next to `assert_android_build_job`:
+Add:
 
 ```python
 def assert_android_instrumentation_job(self, text):
@@ -255,6 +234,8 @@ def assert_android_instrumentation_job(self, text):
         'SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
         'cmdline-tools/latest/bin/sdkmanager',
         'cmdline-tools/latest/bin/avdmanager',
+        "'platforms;android-37.0'",
+        "'build-tools;36.0.0'",
         "'system-images;android-36;google_apis;x86_64'",
         'andy-ci-api36',
         'sys.boot_completed',
@@ -278,19 +259,15 @@ def test_android_instrumentation_has_separate_unprivileged_boundary(self):
     self.assert_android_instrumentation_job(self.workflow())
 ```
 
-- [ ] **Step 2: Run the targeted test and verify RED**
-
-Run:
+- [ ] **Step 2: Run and confirm RED**
 
 ```bash
 python3 -m unittest tests.architecture.test_guardrails_policy.GuardPolicyTests.test_android_instrumentation_has_separate_unprivileged_boundary -v
 ```
 
-Expected: FAIL because `android-instrumentation` does not exist.
+Expected: FAIL.
 
-- [ ] **Step 3: Add the new job to `.github/workflows/governance.yml`**
-
-Append this job under `jobs:` at the same indentation level as `android-build`:
+- [ ] **Step 3: Add the job to `.github/workflows/governance.yml`**
 
 ```yaml
   android-instrumentation:
@@ -335,7 +312,7 @@ Append this job under `jobs:` at the same indentation level as `android-build`:
             echo 'DEVICE_IDENTITY_MODULE_NOT_PRESENT'
           fi
 
-      - name: Install emulator tooling and API 36 image
+      - name: Install Android emulator dependencies
         if: steps.device_identity.outputs.present == 'true'
         shell: bash
         run: |
@@ -348,9 +325,13 @@ Append this job under `jobs:` at the same indentation level as `android-build`:
           test -x "$AVDMANAGER"
           "$SDKMANAGER" --version
           "$SDKMANAGER" \
+            'platforms;android-37.0' \
+            'build-tools;36.0.0' \
             'platform-tools' \
             'emulator' \
             'system-images;android-36;google_apis;x86_64'
+          test -d "$SDK_ROOT/platforms/android-37.0"
+          test -d "$SDK_ROOT/build-tools/36.0.0"
           test -x "$SDK_ROOT/platform-tools/adb"
           test -x "$SDK_ROOT/emulator/emulator"
 
@@ -406,17 +387,7 @@ Append this job under `jobs:` at the same indentation level as `android-build`:
           "$SDK_ROOT/platform-tools/adb" emulator -kill || true
 ```
 
-- [ ] **Step 4: Run the targeted job test and verify GREEN**
-
-Run:
-
-```bash
-python3 -m unittest tests.architecture.test_guardrails_policy.GuardPolicyTests.test_android_instrumentation_has_separate_unprivileged_boundary -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Add negative security mutations for the instrumentation job**
+- [ ] **Step 4: Add job-scoped negative mutations**
 
 Add:
 
@@ -424,34 +395,36 @@ Add:
 def test_android_instrumentation_rejects_privilege_and_emulator_mutations(self):
     text = self.workflow()
     self.assert_android_instrumentation_job(text)
+    prefix, job = text.split('\n  android-instrumentation:', 1)
     mutations = [
-        text.replace('contents: read', 'contents: write', 1),
-        text.replace('persist-credentials: false', 'persist-credentials: true', 1),
-        text.replace('github.event.pull_request.head.sha', 'github.head_ref', 1),
-        text.replace("'system-images;android-36;google_apis;x86_64'",
-                     "'system-images;android-35;google_apis;x86_64'"),
-        text.replace(':data:device-identity:connectedDebugAndroidTest', ':app:assembleDebug', 1),
-        text.replace('SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
-                     'SDK_ROOT="/usr/local/lib/android/sdk"', 1),
-        text + '\n      - run: sudo true\n',
-        text + '\n      - run: ssh synthetic.invalid\n',
+        job.replace('contents: read', 'contents: write'),
+        job.replace('persist-credentials: false', 'persist-credentials: true', 1),
+        job.replace('github.event.pull_request.head.sha', 'github.head_ref'),
+        job.replace("'system-images;android-36;google_apis;x86_64'",
+                    "'system-images;android-35;google_apis;x86_64'"),
+        job.replace(':data:device-identity:connectedDebugAndroidTest', ':app:assembleDebug'),
+        job.replace('SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+                    'SDK_ROOT="/usr/local/lib/android/sdk"', 1),
+        job + '\n      - run: sudo true\n',
+        job + '\n      - run: ssh synthetic.invalid\n',
     ]
     for index, mutation in enumerate(mutations):
+        candidate = prefix + '\n  android-instrumentation:' + mutation
         with self.subTest(mutation=index), self.assertRaises(AssertionError):
-            self.assert_android_instrumentation_job(mutation)
+            self.assert_android_instrumentation_job(candidate)
 ```
 
-- [ ] **Step 6: Run all architecture policy tests**
-
-Run:
+- [ ] **Step 5: Run the instrumentation policy tests and confirm GREEN**
 
 ```bash
-python3 -m unittest tests.architecture.test_guardrails_policy -v
+python3 -m unittest \
+  tests.architecture.test_guardrails_policy.GuardPolicyTests.test_android_instrumentation_has_separate_unprivileged_boundary \
+  tests.architecture.test_guardrails_policy.GuardPolicyTests.test_android_instrumentation_rejects_privilege_and_emulator_mutations -v
 ```
 
-Expected: all tests PASS.
+Expected: PASS.
 
-- [ ] **Step 7: Commit Task 2**
+- [ ] **Step 6: Commit Task 2**
 
 ```bash
 git add .github/workflows/governance.yml tests/architecture/test_guardrails_policy.py
@@ -460,19 +433,16 @@ git commit -m "ci: add Android instrumentation gate"
 
 ---
 
-### Task 3: Require the device-identity JVM tests when the feature module exists
+### Task 3: Gate future core/data JVM tests in `android-build`
 
 **Files:**
 - Modify: `.github/workflows/governance.yml`
 - Modify: `tests/architecture/test_guardrails_policy.py`
 
 **Interfaces:**
-- Consumes: `core/device-identity/build.gradle.kts` and `data/device-identity/build.gradle.kts` when the future feature branch contains them.
-- Produces: JVM gate for `:core:device-identity:test` and `:data:device-identity:testDebugUnitTest` inside the existing read-only `android-build` job.
+- Produces conditional execution of `:core:device-identity:test` and `:data:device-identity:testDebugUnitTest`.
 
-- [ ] **Step 1: Add a failing policy assertion**
-
-Extend `assert_android_build_job()` with:
+- [ ] **Step 1: Add failing assertions to `assert_android_build_job()`**
 
 ```python
 for required in (
@@ -483,19 +453,15 @@ for required in (
     self.assertIn(required, job)
 ```
 
-- [ ] **Step 2: Run the android-build policy test and verify RED**
-
-Run:
+- [ ] **Step 2: Run and confirm RED**
 
 ```bash
 python3 -m unittest tests.architecture.test_guardrails_policy.GuardPolicyTests.test_android_build_has_separate_unprivileged_boundary -v
 ```
 
-Expected: FAIL because the module-specific JVM tests are not wired.
+Expected: FAIL.
 
-- [ ] **Step 3: Add module detection and conditional JVM tests to `android-build`**
-
-Immediately after `Detect Android project`, add:
+- [ ] **Step 3: Add module detection after `Detect Android project`**
 
 ```yaml
       - name: Detect device identity module
@@ -513,7 +479,7 @@ Immediately after `Detect Android project`, add:
           fi
 ```
 
-After the existing `Build and test exact candidate` step, add:
+- [ ] **Step 4: Add conditional JVM tests after the existing app build/test step**
 
 ```yaml
       - name: Run device identity JVM tests
@@ -526,21 +492,9 @@ After the existing `Build and test exact candidate` step, add:
             :data:device-identity:testDebugUnitTest
 ```
 
-Keep APK upload after this step so artifact publication occurs only after all JVM tests succeed.
+Keep APK upload after this step.
 
-- [ ] **Step 4: Run the policy test and verify GREEN**
-
-Run:
-
-```bash
-python3 -m unittest tests.architecture.test_guardrails_policy.GuardPolicyTests.test_android_build_has_separate_unprivileged_boundary -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Run the complete governance suite**
-
-Run:
+- [ ] **Step 5: Run the full governance suite**
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -549,11 +503,7 @@ python3 scripts/security/scan_secrets.py .
 git diff --check
 ```
 
-Expected:
-- all tests PASS;
-- `ARCH_PASS`;
-- `SECRET_SCAN_PASS`;
-- `git diff --check` exits 0.
+Expected: all tests PASS, `ARCH_PASS`, `SECRET_SCAN_PASS`, zero diff-check errors.
 
 - [ ] **Step 6: Commit Task 3**
 
@@ -564,18 +514,15 @@ git commit -m "ci: gate device identity JVM tests"
 
 ---
 
-### Task 4: Verify the governance candidate and open the PR
+### Task 4: Open the governance PR and stop at the review gate
 
 **Files:**
-- Verify only; no additional file changes expected.
+- No further edits.
 
 **Interfaces:**
-- Consumes: Tasks 1-3.
-- Produces: reviewable governance PR with no feature code.
+- Produces a governance-only PR.
 
-- [ ] **Step 1: Verify the exact changed path set**
-
-Run:
+- [ ] **Step 1: Verify exact changed paths**
 
 ```bash
 git diff --name-only origin/main...HEAD | sort
@@ -589,8 +536,6 @@ Expected exactly:
 tests/architecture/test_guardrails_policy.py
 ```
 
-If any other path appears, stop and remove the unrelated change before continuing.
-
 - [ ] **Step 2: Run final local verification**
 
 ```bash
@@ -601,23 +546,21 @@ git diff --check origin/main...HEAD
 git status --short --branch
 ```
 
-Expected: tests PASS, `ARCH_PASS`, `SECRET_SCAN_PASS`, clean worktree except branch tracking metadata.
+Expected: PASS, `ARCH_PASS`, `SECRET_SCAN_PASS`, clean worktree.
 
-- [ ] **Step 3: Push the governance branch**
+- [ ] **Step 3: Push and open PR**
 
 ```bash
 git push -u origin chore/architecture-governance/android-device-identity-v1
 ```
 
-- [ ] **Step 4: Open the governance PR**
-
-Use title:
+Title:
 
 ```text
 ci: add Android device identity frontier and instrumentation gate
 ```
 
-PR body must state:
+Body:
 
 ```text
 Governance-only preparation for android-device-identity-v1.
@@ -629,9 +572,9 @@ No Android feature implementation is included. No secrets, write permissions, th
 Do not merge automatically.
 ```
 
-- [ ] **Step 5: Wait for all current required checks plus `android-instrumentation`**
+- [ ] **Step 4: Wait for five check contexts**
 
-Expected on the governance PR:
+Expected:
 
 ```text
 architecture-guard = success
@@ -641,75 +584,52 @@ android-build = success
 android-instrumentation = success
 ```
 
-Because the feature module does not exist yet, `android-instrumentation` must report `DEVICE_IDENTITY_MODULE_NOT_PRESENT` and exit successfully without executing candidate instrumentation tests. The check context must still exist.
+On this governance PR the module does not exist, so `android-instrumentation` must report `DEVICE_IDENTITY_MODULE_NOT_PRESENT` and finish successfully without candidate instrumentation execution.
 
-- [ ] **Step 6: Stop for explicit human merge approval**
+- [ ] **Step 5: Stop for explicit merge approval**
 
-Do not merge in this task. Report PR URL, head SHA, changed paths, local test totals, and five remote check conclusions.
+Report PR URL, head SHA, changed paths, local test totals, and all five check conclusions. Do not merge.
 
 ---
 
-### Task 5: Post-approval merge and branch-protection gate
+### Task 5: Merge after approval and require `android-instrumentation`
 
 **Files:**
-- No repository file edits.
-- GitHub branch protection/ruleset configuration only.
+- No repository edits.
 
 **Interfaces:**
-- Consumes: explicit human authorization after Task 4.
-- Produces: `main` containing the trusted frontier and CI job, with `android-instrumentation` required for future PRs.
+- Consumes explicit human approval.
+- Produces green main plus a five-check required-status policy.
 
-- [ ] **Step 1: Freshly verify the PR before merge**
+- [ ] **Step 1: Freshly re-read PR state, head SHA, mergeability, and five checks**
 
-Confirm:
+Expected: open, mergeable, unchanged reviewed head, all checks success.
 
-```text
-PR state = open
-mergeable = true
-head SHA unchanged from reviewed candidate
-all five checks = success
-```
+- [ ] **Step 2: Merge with expected head SHA and no bypass**
 
-- [ ] **Step 2: Merge with expected head SHA**
+Use the repository's existing merge method.
 
-Use the repository's existing merge method and an expected-head guard. Do not bypass branch protection.
+- [ ] **Step 3: Wait for the post-merge main checks**
 
-- [ ] **Step 3: Verify the post-merge main checks**
+Expected all five checks success on the merge SHA.
 
-On the new `main` SHA, wait for:
+- [ ] **Step 4: Read current branch protection/ruleset before mutation**
 
-```text
-architecture-guard = success
-governance-tests = success
-secret-scan = success
-android-build = success
-android-instrumentation = success
-```
+Preserve strict mode, PR requirements, admin enforcement, force-push protection, deletion protection, and existing required contexts.
 
-- [ ] **Step 4: Add `android-instrumentation` to required status checks without removing existing contexts**
+- [ ] **Step 5: Append exactly `android-instrumentation` to required checks**
 
-Read the current branch protection/ruleset first. Preserve strictness and these existing contexts:
+The resulting required contexts must include:
 
 ```text
 architecture-guard
 governance-tests
 secret-scan
 android-build
-```
-
-Append exactly:
-
-```text
 android-instrumentation
 ```
 
-Do not disable strict mode, PR requirements, admin enforcement, force-push protection, deletion protection, or any existing rule.
-
-- [ ] **Step 5: Read back the protection/ruleset and verify**
-
-Expected required contexts exactly include all five checks. Report no weakening of protection.
-
-- [ ] **Step 6: Final governance completion report**
+- [ ] **Step 6: Read back and verify no policy weakening**
 
 Report:
 
