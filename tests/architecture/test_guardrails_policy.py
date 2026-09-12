@@ -79,7 +79,20 @@ class GuardPolicyTests(unittest.TestCase):
         self.assertIn("java-version: '17'", job)
         self.assertIn('[[ -x ./gradlew && -f ./settings.gradle.kts && -f ./app/build.gradle.kts ]]', job)
         self.assertIn('ANDROID_PROJECT_NOT_PRESENT', job)
-        self.assertIn("sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'", job)
+        for required in ('SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+                         'test -n "$SDK_ROOT"',
+                         'SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"',
+                         'test -x "$SDKMANAGER"',
+                         '"$SDKMANAGER" --version',
+                         '"$SDKMANAGER" \'platforms;android-37.0\' \'build-tools;36.0.0\'',
+                         'test -d "$SDK_ROOT/platforms/android-37.0"',
+                         'test -d "$SDK_ROOT/build-tools/36.0.0"'):
+            self.assertIn(required, job)
+        self.assertNotIn('command -v sdkmanager', job)
+        self.assertNotRegex(job, r'(?m)^\s*sdkmanager\b')
+        for forbidden in ('/usr/local/lib/android/sdk', 'GITHUB_PATH', 'sudo ',
+                          'apt-get ', 'setup-android', 'export PATH='):
+            self.assertNotIn(forbidden, job)
         self.assertEqual(job.count("if: steps.android_project.outputs.present == 'true'"), 2)
         self.assertIn('./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug', job)
         steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
@@ -157,6 +170,26 @@ class GuardPolicyTests(unittest.TestCase):
             text.replace('if-no-files-found: error', 'if-no-files-found: warn'),
             text.replace('name: Build and test exact candidate',
                          'name: Build and test exact candidate\n        continue-on-error: true'),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                self.assert_android_build_job(mutation)
+
+    def test_android_build_rejects_sdkmanager_path_mutations(self):
+        text = self.workflow()
+        self.assert_android_build_job(text)
+        mutations = [
+            text.replace('SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"',
+                         'SDK_ROOT="${ANDROID_SDK_ROOT:-}"'),
+            text.replace('cmdline-tools/latest/bin/sdkmanager', 'tools/bin/sdkmanager'),
+            text.replace('test -n "$SDK_ROOT"', 'true'),
+            text.replace('test -x "$SDKMANAGER"', 'command -v sdkmanager'),
+            text.replace('"$SDKMANAGER" --version', 'sdkmanager --version'),
+            text.replace('"$SDKMANAGER" \'platforms;', 'sdkmanager \'platforms;'),
+            text.replace('test -d "$SDK_ROOT/platforms/android-37.0"', 'true'),
+            text.replace('test -d "$SDK_ROOT/build-tools/36.0.0"', 'true'),
+            text + '\n          command -v sdkmanager\n',
+            text + '\n          sdkmanager --version\n',
         ]
         for index, mutation in enumerate(mutations):
             with self.subTest(mutation=index), self.assertRaises(AssertionError):
