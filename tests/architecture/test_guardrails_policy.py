@@ -145,7 +145,49 @@ class GuardPolicyTests(unittest.TestCase):
             self.assertIn(evidence, output)
         self.assertNotIn('fixture-emulator-launched', output)
 
-    def run_boot_fixture(self, mode, devices='pixel\npixel_xl\n'):
+    def test_avd_path_diagnostics_are_bounded_before_emulator_launch(self):
+        job = self.jobs(self.workflow())['android-instrumentation']
+        boot = self.step(job, 'Create and boot API 36 emulator')
+        self.assertIn('echo "HOME=$HOME"', boot)
+        start = boot.index('echo "HOME=$HOME"')
+        end = boot.index('          "$EMULATOR" \\\n')
+        self.assertGreater(start, boot.index('--device "$DEVICE_ID"'))
+        diagnostic = boot[start:end]
+        for variable in ('ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ANDROID_SDK_HOME',
+                         'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME', 'ANDROID_AVD_HOME'):
+            self.assertIn('echo "' + variable + '=${' + variable + ':-UNSET}"', diagnostic)
+        for command in ('"$AVDMANAGER" list avd', '"$AVDMANAGER" list avd -c',
+                        '"$EMULATOR" -list-avds'):
+            self.assertIn('timeout -k 1s 10s ' + command + ' || true', diagnostic)
+        for path in ('"$HOME/.android"', '"$ANDROID_AVD_HOME"', '"$ANDROID_USER_HOME"',
+                     '"$ANDROID_EMULATOR_HOME"', '"$ANDROID_SDK_HOME"', '"$HOME" "$SDK_ROOT"'):
+            self.assertIn('timeout -k 1s 5s find ' + path, diagnostic)
+        for forbidden in ('export ', 'sudo ', 'ln ', 'mv ', 'cp ', 'env\n', 'printenv',
+                          '${{ secrets', 'find / '):
+            self.assertNotIn(forbidden, diagnostic)
+
+    def test_avd_path_diagnostics_show_divergent_lists_without_remediation(self):
+        status, output = self.run_boot_fixture('success', path_environment=True)
+        self.assertEqual(status, 0, output)
+        for evidence in ('=== avdmanager detailed list ===', '=== avdmanager compact list ===',
+                         '=== emulator visible avds ===', '=== HOME android AVD files ===',
+                         'Path: ', 'andy-ci-api36', 'synthetic-emulator-other-avd',
+                         'synthetic-avd.ini'):
+            self.assertIn(evidence, output)
+        for variable in ('HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ANDROID_SDK_HOME',
+                         'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME', 'ANDROID_AVD_HOME'):
+            self.assertRegex(output, r'(?m)^' + variable + r'=/.+$')
+        self.assertLess(output.index('=== emulator visible avds ==='),
+                        output.index('fixture-emulator-launched'))
+
+    def test_avd_path_diagnostics_handle_unset_optional_variables(self):
+        status, output = self.run_boot_fixture('success')
+        self.assertEqual(status, 0, output)
+        for variable in ('ANDROID_SDK_HOME', 'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME',
+                         'ANDROID_AVD_HOME'):
+            self.assertIn(variable + '=UNSET', output)
+
+    def run_boot_fixture(self, mode, devices='pixel\npixel_xl\n', path_environment=False):
         job = self.jobs(self.workflow())['android-instrumentation']
         step = self.step(job, 'Create and boot API 36 emulator')
         script = textwrap.dedent(step.split('        run: |\n', 1)[1])
@@ -153,7 +195,7 @@ class GuardPolicyTests(unittest.TestCase):
         script = script.replace('SECONDS + 240', 'SECONDS + 2')
         script = script.replace('3s ', '0.2s ').replace('60s ', '0.2s ')
         script = script.replace('10s ', '0.2s ').replace('sleep 2', 'sleep 0.05')
-        script = script.replace('$HOME/.android/avd', '$RUNNER_TEMP/.android/avd')
+        script = script.replace('$HOME', '$RUNNER_TEMP')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / '.android/avd').mkdir(parents=True)
@@ -162,6 +204,7 @@ class GuardPolicyTests(unittest.TestCase):
                 'cmdline-tools/latest/bin/avdmanager':
                     'case "$*" in\n'
                     '  "list device -c") printf "%s" "$FIXTURE_DEVICES" ;;\n'
+                    '  "list avd") echo "Path: $RUNNER_TEMP/.android/avd/andy-ci-api36.avd" ;;\n'
                     '  "list avd -c")\n'
                     '    if [[ "$BOOT_FIXTURE" == missing_avd ]]; then echo andy-ci-api36-other;\n'
                     '    elif [[ -f "$RUNNER_TEMP/selected-device" ]]; then echo andy-ci-api36; fi ;;\n'
@@ -177,6 +220,7 @@ class GuardPolicyTests(unittest.TestCase):
                     '  *) exit 2 ;;\n'
                     'esac\n',
                 'emulator/emulator':
+                    'if [[ "$*" == -list-avds ]]; then echo synthetic-emulator-other-avd; exit 0; fi\n'
                     'touch "$RUNNER_TEMP/emulator-launched"\n'
                     'echo synthetic-emulator-log\n'
                     'if [[ "$BOOT_FIXTURE" == early_exit ]]; then exit 1; fi\n'
@@ -203,6 +247,11 @@ class GuardPolicyTests(unittest.TestCase):
                 executable.chmod(0o755)
             env = dict(os.environ, ANDROID_SDK_ROOT=temporary, ANDROID_HOME=temporary,
                        RUNNER_TEMP=temporary, BOOT_FIXTURE=mode, FIXTURE_DEVICES=devices)
+            for variable in ('ANDROID_SDK_HOME', 'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME',
+                             'ANDROID_AVD_HOME'):
+                env.pop(variable, None)
+                if path_environment:
+                    env[variable] = str(root / '.android/avd')
             process = subprocess.Popen(['bash', '-c', script], env=env, cwd=temporary,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, start_new_session=True)
