@@ -44,6 +44,101 @@ def device_identity_manifest():
 
 
 class GuardPolicyTests(unittest.TestCase):
+    def assert_kvm_preflight(self, text):
+        job = self.jobs(text)['android-instrumentation']
+        step = self.step(job, 'Verify KVM access and acceleration')
+        self.assert_step_condition(step, "steps.device_identity.outputs.present == 'true'")
+        self.assertIn('timeout-minutes: 1', step)
+        self.assertLess(job.index(step), job.index(self.step(job, 'Create and boot API 36 emulator')))
+        self.assertIn('timeout -k 1s 10s "$EMULATOR" -accel-check', step)
+        allowed = '            sudo chmod 0666 /dev/kvm\n'
+        self.assertEqual(step.count(allowed), 1)
+        # Remove only the exact standalone exception in this specific step.
+        remainder = text.replace(step, step.replace(allowed, ''), 1)
+        self.assertNotRegex(remainder, r'\bsudo\b|\bchmod\b')
+
+    def test_kvm_preflight_allows_only_exact_scoped_sudo(self):
+        text = self.workflow()
+        self.assert_kvm_preflight(text)
+        for command in ('sudo apt update', 'sudo usermod runner', 'sudo gpasswd runner',
+                        'sudo groupadd other', 'sudo chown runner /dev/kvm', 'sudo sh',
+                        'sudo chmod 0666 /tmp/other', 'sudo chmod 0666 /dev/kvm; true'):
+            with self.subTest(command=command), self.assertRaises(AssertionError):
+                self.assert_kvm_preflight(text.replace('sudo chmod 0666 /dev/kvm', command))
+        with self.assertRaises(AssertionError):
+            self.assert_kvm_preflight(text + '\n      - run: sudo chmod 0666 /dev/kvm\n')
+
+    def run_kvm_fixture(self, mode):
+        job = self.jobs(self.workflow())['android-instrumentation']
+        step = self.step(job, 'Verify KVM access and acceleration')
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        # Shell doubles model permissions without touching the real KVM device or sudo.
+        prefix = '''
+access=no
+[[ "$KVM_FIXTURE" == accessible || "$KVM_FIXTURE" == accel_failure ]] && access=yes
+timeout() {
+  case "$4" in
+    id|ls) echo synthetic-host-evidence ;;
+    *) command timeout "$@" ;;
+  esac
+}
+test() {
+  if [[ "$2" != /dev/kvm ]]; then builtin test "$@"; return; fi
+  case "$1" in
+    -e) [[ "$KVM_FIXTURE" != absent ]] ;;
+    -r|-w) [[ "$access" == yes ]] ;;
+    *) return 2 ;;
+  esac
+}
+sudo() {
+  printf 'privileged-command=%s\\n' "$*"
+  [[ "$*" == 'chmod 0666 /dev/kvm' ]] || return 2
+  if [[ "$KVM_FIXTURE" != denied ]]; then access=yes; fi
+}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / 'emulator/emulator'
+            executable.parent.mkdir()
+            executable.write_text('#!/bin/bash\n'
+                                  '[[ "$*" == -accel-check ]] || exit 2\n'
+                                  'echo fixture-accel-check\n'
+                                  '[[ "$KVM_FIXTURE" != accel_failure ]]\n')
+            executable.chmod(0o755)
+            env = dict(os.environ, ANDROID_SDK_ROOT=temporary, KVM_FIXTURE=mode)
+            result = subprocess.run(['bash', '-c', prefix + script], env=env,
+                                    capture_output=True, text=True, timeout=5)
+            return result.returncode, result.stdout + result.stderr
+
+    def test_kvm_missing_device_fails_before_acceleration(self):
+        status, output = self.run_kvm_fixture('absent')
+        self.assertNotEqual(status, 0)
+        self.assertIn('KVM_DEVICE_MISSING', output)
+        self.assertNotIn('privileged-command=', output)
+        self.assertNotIn('fixture-accel-check', output)
+
+    def test_kvm_existing_access_never_invokes_sudo(self):
+        status, output = self.run_kvm_fixture('accessible')
+        self.assertEqual(status, 0, output)
+        self.assertNotIn('privileged-command=', output)
+        self.assertIn('fixture-accel-check', output)
+
+    def test_kvm_missing_access_uses_exact_remediation(self):
+        status, output = self.run_kvm_fixture('remediate')
+        self.assertEqual(status, 0, output)
+        self.assertEqual(output.count('privileged-command=chmod 0666 /dev/kvm'), 1)
+        self.assertIn('fixture-accel-check', output)
+
+    def test_kvm_failed_remediation_fails_closed(self):
+        status, output = self.run_kvm_fixture('denied')
+        self.assertNotEqual(status, 0)
+        self.assertIn('KVM_ACCESS_UNAVAILABLE', output)
+        self.assertNotIn('fixture-accel-check', output)
+
+    def test_kvm_acceleration_failure_blocks_avd_flow(self):
+        status, output = self.run_kvm_fixture('accel_failure')
+        self.assertNotEqual(status, 0)
+        self.assertIn('KVM_ACCEL_CHECK_FAILED', output)
+
     def assert_boot_diagnostics(self, text):
         job = self.jobs(text)['android-instrumentation']
         boot = self.step(job, 'Create and boot API 36 emulator')
@@ -406,12 +501,14 @@ class GuardPolicyTests(unittest.TestCase):
         ):
             self.assertIn(required, job)
         for forbidden in (
-            'secrets.', 'contents: write', 'id-token:', 'sudo ', 'apt-get ',
+            'secrets.', 'contents: write', 'id-token:', 'apt-get ',
             'setup-android', 'reactivecircus', 'self-hosted', 'ssh ', 'note',
             '/usr/local/lib/android/sdk', 'GITHUB_PATH', 'export PATH=',
             'continue-on-error:', 'deploy', 'publish', 'signing',
         ):
             self.assertNotIn(forbidden, job)
+
+        self.assert_kvm_preflight(text)
 
     def test_android_instrumentation_has_separate_unprivileged_boundary(self):
         self.assert_android_instrumentation_job(self.workflow())
