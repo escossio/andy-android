@@ -164,6 +164,33 @@ jobs:
           test -x "$SDK_ROOT/platform-tools/adb"
           test -x "$SDK_ROOT/emulator/emulator"
 
+      - name: Verify KVM access and acceleration
+        if: steps.device_identity.outputs.present == 'true'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          EMULATOR="$SDK_ROOT/emulator/emulator"
+          if ! test -e /dev/kvm; then
+            echo 'KVM_DEVICE_MISSING'
+            exit 1
+          fi
+          timeout -k 1s 10s id
+          timeout -k 1s 10s id -nG
+          timeout -k 1s 10s ls -l /dev/kvm
+          if ! { test -r /dev/kvm && test -w /dev/kvm; }; then
+            sudo chmod 0666 /dev/kvm
+          fi
+          if ! { test -r /dev/kvm && test -w /dev/kvm; }; then
+            echo 'KVM_ACCESS_UNAVAILABLE'
+            exit 1
+          fi
+          if ! timeout -k 1s 10s "$EMULATOR" -accel-check; then
+            echo 'KVM_ACCEL_CHECK_FAILED'
+            exit 1
+          fi
+
       - name: Create and boot API 36 emulator
         if: steps.device_identity.outputs.present == 'true'
         timeout-minutes: 7
