@@ -166,9 +166,9 @@ class GuardPolicyTests(unittest.TestCase):
                           '${{ secrets', 'find / '):
             self.assertNotIn(forbidden, diagnostic)
 
-    def test_avd_path_diagnostics_show_divergent_lists_without_remediation(self):
-        status, output = self.run_boot_fixture('success', path_environment=True)
-        self.assertEqual(status, 0, output)
+    def test_avd_path_diagnostics_show_divergent_lists_and_block_launch(self):
+        status, output = self.run_boot_fixture('emulator_missing', path_environment=True)
+        self.assertNotEqual(status, 0, output)
         for evidence in ('=== avdmanager detailed list ===', '=== avdmanager compact list ===',
                          '=== emulator visible avds ===', '=== HOME android AVD files ===',
                          'Path: ', 'andy-ci-api36', 'synthetic-emulator-other-avd',
@@ -177,15 +177,40 @@ class GuardPolicyTests(unittest.TestCase):
         for variable in ('HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ANDROID_SDK_HOME',
                          'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME', 'ANDROID_AVD_HOME'):
             self.assertRegex(output, r'(?m)^' + variable + r'=/.+$')
-        self.assertLess(output.index('=== emulator visible avds ==='),
-                        output.index('fixture-emulator-launched'))
+        self.assertIn('AVD_EMULATOR_DISCOVERY_FAILED', output)
+        self.assertNotIn('fixture-emulator-launched', output)
 
     def test_avd_path_diagnostics_handle_unset_optional_variables(self):
         status, output = self.run_boot_fixture('success')
         self.assertEqual(status, 0, output)
-        for variable in ('ANDROID_SDK_HOME', 'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME',
-                         'ANDROID_AVD_HOME'):
+        for variable in ('ANDROID_SDK_HOME', 'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME'):
             self.assertIn(variable + '=UNSET', output)
+
+    def test_shared_avd_home_is_exported_before_both_tools(self):
+        job = self.jobs(self.workflow())['android-instrumentation']
+        boot = self.step(job, 'Create and boot API 36 emulator')
+        self.assertIn('AVD_HOME="$RUNNER_TEMP/andy-avd"', boot)
+        self.assertIn('mkdir -p "$AVD_HOME"', boot)
+        self.assertIn('export ANDROID_AVD_HOME="$AVD_HOME"', boot)
+        exported = boot.index('export ANDROID_AVD_HOME="$AVD_HOME"')
+        for command in ('"$AVDMANAGER" create avd', '"$AVDMANAGER" list avd',
+                        '"$EMULATOR" -list-avds', '          "$EMULATOR" \\\n'):
+            self.assertLess(exported, boot.index(command))
+
+    def test_shared_avd_home_is_consumed_by_both_tools(self):
+        status, output = self.run_boot_fixture('success')
+        self.assertEqual(status, 0, output)
+        for evidence in ('manager-shared-home=YES', 'emulator-shared-home=YES',
+                         'fixture-emulator-launched'):
+            self.assertIn(evidence, output)
+
+    def test_shared_avd_home_missing_files_fail_before_launch(self):
+        for mode in ('missing_ini', 'missing_avd_dir'):
+            with self.subTest(mode=mode):
+                status, output = self.run_boot_fixture(mode)
+                self.assertNotEqual(status, 0, output)
+                self.assertIn('AVD_FILES_POSTCONDITION_FAILED', output)
+                self.assertNotIn('fixture-emulator-launched', output)
 
     def run_boot_fixture(self, mode, devices='pixel\npixel_xl\n', path_environment=False):
         job = self.jobs(self.workflow())['android-instrumentation']
@@ -202,6 +227,9 @@ class GuardPolicyTests(unittest.TestCase):
             (root / '.android/avd/synthetic-avd.ini').touch()
             fixtures = {
                 'cmdline-tools/latest/bin/avdmanager':
+                    'if [[ "${ANDROID_AVD_HOME:-}" == "$RUNNER_TEMP/andy-avd" ]]; then\n'
+                    '  echo manager-shared-home=YES >> "$RUNNER_TEMP/shared-home-evidence"\n'
+                    'fi\n'
                     'case "$*" in\n'
                     '  "list device -c") printf "%s" "$FIXTURE_DEVICES" ;;\n'
                     '  "list avd") echo "Path: $RUNNER_TEMP/.android/avd/andy-ci-api36.avd" ;;\n'
@@ -213,6 +241,14 @@ class GuardPolicyTests(unittest.TestCase):
                     '    while (( $# )); do\n'
                     '      if [[ "$1" == --device ]]; then\n'
                     '        printf "selected-device=%s\\n" "$2" > "$RUNNER_TEMP/selected-device"\n'
+                    '        if [[ -n "${ANDROID_AVD_HOME:-}" ]]; then\n'
+                    '          if [[ "$BOOT_FIXTURE" != missing_ini ]]; then\n'
+                    '            touch "$ANDROID_AVD_HOME/andy-ci-api36.ini"\n'
+                    '          fi\n'
+                    '          if [[ "$BOOT_FIXTURE" != missing_avd_dir ]]; then\n'
+                    '            mkdir -p "$ANDROID_AVD_HOME/andy-ci-api36.avd"\n'
+                    '          fi\n'
+                    '        fi\n'
                     '        exit 0\n'
                     '      fi\n'
                     '      shift\n'
@@ -220,7 +256,14 @@ class GuardPolicyTests(unittest.TestCase):
                     '  *) exit 2 ;;\n'
                     'esac\n',
                 'emulator/emulator':
-                    'if [[ "$*" == -list-avds ]]; then echo synthetic-emulator-other-avd; exit 0; fi\n'
+                    'if [[ "${ANDROID_AVD_HOME:-}" == "$RUNNER_TEMP/andy-avd" ]]; then\n'
+                    '  echo emulator-shared-home=YES >> "$RUNNER_TEMP/shared-home-evidence"\n'
+                    'fi\n'
+                    'if [[ "$*" == -list-avds ]]; then\n'
+                    '  if [[ "$BOOT_FIXTURE" == emulator_missing ]]; then echo synthetic-emulator-other-avd;\n'
+                    '  else echo andy-ci-api36; fi\n'
+                    '  exit 0\n'
+                    'fi\n'
                     'touch "$RUNNER_TEMP/emulator-launched"\n'
                     'echo synthetic-emulator-log\n'
                     'if [[ "$BOOT_FIXTURE" == early_exit ]]; then exit 1; fi\n'
@@ -264,6 +307,8 @@ class GuardPolicyTests(unittest.TestCase):
                     output += (root / 'selected-device').read_text()
                 if (root / 'emulator-launched').exists():
                     output += 'fixture-emulator-launched\n'
+                if (root / 'shared-home-evidence').exists():
+                    output += (root / 'shared-home-evidence').read_text()
                 return process.returncode, output
             finally:
                 # Kill only the synthetic process group, including its fake emulator.
