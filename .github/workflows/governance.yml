@@ -185,6 +185,9 @@ jobs:
             test -e /dev/kvm && ls -l /dev/kvm || true
           }
           trap 'status=$?; if (( status != 0 )); then boot_diagnostics; fi' EXIT
+          AVD_HOME="$RUNNER_TEMP/andy-avd"
+          mkdir -p "$AVD_HOME"
+          export ANDROID_AVD_HOME="$AVD_HOME"
           AVAILABLE_DEVICES="$(timeout -k 1s 10s "$AVDMANAGER" list device -c)"
           if grep -qx 'pixel' <<< "$AVAILABLE_DEVICES"; then
             DEVICE_ID='pixel'
@@ -237,6 +240,16 @@ jobs:
             printf '%s\n' "$AVAILABLE_DEVICES"
             printf '%s\n' "$AVAILABLE_AVDS"
             find "$HOME/.android/avd" -maxdepth 2 -type f -print 2>/dev/null || true
+            exit 1
+          fi
+          EMULATOR_AVDS="$(timeout -k 1s 10s "$EMULATOR" -list-avds)"
+          if ! grep -qx 'andy-ci-api36' <<< "$EMULATOR_AVDS"; then
+            echo 'AVD_EMULATOR_DISCOVERY_FAILED'
+            printf '%s\n' "$EMULATOR_AVDS"
+            exit 1
+          fi
+          if [[ ! -f "$ANDROID_AVD_HOME/andy-ci-api36.ini" || ! -d "$ANDROID_AVD_HOME/andy-ci-api36.avd" ]]; then
+            echo 'AVD_FILES_POSTCONDITION_FAILED'
             exit 1
           fi
           "$EMULATOR" \
