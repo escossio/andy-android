@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.*
 
 data class OnboardingConfiguration(val clientApiBaseUrl:String,val googleWebClientId:String)
 class OnboardingCoordinator(ready:Boolean,private val config:OnboardingConfiguration,private val client:HumanAuthClient,private val provider:GoogleCredentialAcquirer,private val engine:HumanIdentityEngine=HumanIdentityEngine(ready)) {
- private val mutable=MutableStateFlow(engine.state);val state:StateFlow<HumanIdentityState>=mutable.asStateFlow()
+ private val mutable=MutableStateFlow(engine.state);val state: StateFlow<HumanIdentityState> = mutable.asStateFlow()
  suspend fun continueWithGoogle() {
   if(engine.state==HumanIdentityState.DeviceIdentityUnavailable){mutable.value=engine.begin();return}
   if(config.clientApiBaseUrl.isBlank()||config.googleWebClientId.isBlank()){mutable.value=engine.fail(HumanIdentityFailure.CONFIGURATION_MISSING);return}

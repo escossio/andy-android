@@ -1,6 +1,8 @@
 package io.github.escossio.andy.sdk.clientapi
 
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -12,12 +14,12 @@ enum class HumanAuthErrorCode { NETWORK_FAILURE, HUMAN_AUTH_DISABLED, HUMAN_AUTH
 sealed interface ChallengeResult { data class Success(val challenge:GoogleChallenge):ChallengeResult; data class Failure(val error:HumanAuthErrorCode):ChallengeResult }
 sealed interface VerifyResult { data class Success(val validated:HumanIdentityValidated):VerifyResult; data class Failure(val error:HumanAuthErrorCode):VerifyResult }
 data class TransportResponse(val statusCode:Int,val body:String?)
-interface HumanAuthTransport { fun post(path:String,body:String):TransportResponse }
-interface HumanAuthClient { fun requestChallenge():ChallengeResult; fun verify(challengeId:String,idToken:String):VerifyResult }
+interface HumanAuthTransport { suspend fun post(path:String,body:String):TransportResponse }
+interface HumanAuthClient { suspend fun requestChallenge():ChallengeResult; suspend fun verify(challengeId:String,idToken:String):VerifyResult }
 
 class AttentionRouterHumanAuthClient(private val baseUrl:String,private val transport:HumanAuthTransport=OkHttpHumanAuthTransport(baseUrl)):HumanAuthClient {
- override fun requestChallenge()=try { val r=transport.post(PATH,"{}");if(r.statusCode==201) r.body?.let(::challenge)?:ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else ChallengeResult.Failure(error(r.body)) } catch(_:Exception){ChallengeResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
- override fun verify(challengeId:String,idToken:String):VerifyResult {
+ override suspend fun requestChallenge()=try { val r=transport.post(PATH,"{}");if(r.statusCode==201) r.body?.let(::challenge)?:ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else ChallengeResult.Failure(error(r.body)) } catch(_:Exception){ChallengeResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
+ override suspend fun verify(challengeId:String,idToken:String):VerifyResult {
   if(challengeId.isBlank()||idToken.isBlank()) return VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE)
   return try { val r=transport.post("$PATH/$challengeId/verify",buildJsonObject{put("id_token",idToken)}.toString());if(r.statusCode==200) r.body?.let(::validated)?:VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else VerifyResult.Failure(error(r.body)) } catch(_:Exception){VerifyResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
  }
@@ -29,5 +31,5 @@ class AttentionRouterHumanAuthClient(private val baseUrl:String,private val tran
  private companion object { const val PATH="/api/v1/auth/google/challenges" }
 }
 class OkHttpHumanAuthTransport(private val baseUrl:String,private val http:OkHttpClient=OkHttpClient()):HumanAuthTransport {
- override fun post(path:String,body:String):TransportResponse { require(baseUrl.startsWith("https://")||baseUrl.startsWith("http://"));val request=Request.Builder().url(baseUrl.trimEnd('/')+path).post(body.toRequestBody("application/json".toMediaType())).build();return http.newCall(request).execute().use { response -> TransportResponse(response.code,response.body?.string()) } }
+ override suspend fun post(path:String,body:String):TransportResponse { require(baseUrl.startsWith("https://"));val request=Request.Builder().url(baseUrl.trimEnd('/')+path).post(body.toRequestBody("application/json".toMediaType())).build();return withContext(Dispatchers.IO) { http.newCall(request).execute().use { response -> TransportResponse(response.code,response.body?.string()) } } }
 }
