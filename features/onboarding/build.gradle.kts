@@ -8,7 +8,7 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
 dependencies {
-    implementation(project(":core:human-identity"))
+    api(project(":core:human-identity"))
     implementation(project(":sdk:client-api"))
     implementation(project(":integrations:google-identity"))
     implementation(platform(libs.androidx.compose.bom))
