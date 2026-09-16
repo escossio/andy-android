@@ -38,8 +38,39 @@ DEVICE_IDENTITY_ALLOWED_PATHS = {
 }
 
 
+HUMAN_IDENTITY_ALLOWED_PATHS = {
+    'settings.gradle.kts',
+    'gradle/libs.versions.toml',
+    'app/build.gradle.kts',
+    'app/src/main/AndroidManifest.xml',
+    'app/src/main/java/io/github/escossio/andy/MainActivity.kt',
+    'app/src/main/res/values/strings.xml',
+    'core/human-identity/build.gradle.kts',
+    'core/human-identity/src/main/kotlin/io/github/escossio/andy/core/humanidentity/HumanIdentity.kt',
+    'core/human-identity/src/main/kotlin/io/github/escossio/andy/core/humanidentity/HumanIdentityEngine.kt',
+    'core/human-identity/src/test/kotlin/io/github/escossio/andy/core/humanidentity/HumanIdentityEngineTest.kt',
+    'sdk/client-api/build.gradle.kts',
+    'sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterHumanAuthClient.kt',
+    'sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterHumanAuthClientTest.kt',
+    'integrations/google-identity/build.gradle.kts',
+    'integrations/google-identity/src/main/AndroidManifest.xml',
+    'integrations/google-identity/src/main/java/io/github/escossio/andy/integrations/googleidentity/GoogleCredentialAcquirer.kt',
+    'integrations/google-identity/src/test/java/io/github/escossio/andy/integrations/googleidentity/GoogleCredentialAcquirerTest.kt',
+    'features/onboarding/build.gradle.kts',
+    'features/onboarding/src/main/AndroidManifest.xml',
+    'features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt',
+    'features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt',
+    'features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt',
+}
+
+
 def device_identity_manifest():
     path = Path(__file__).resolve().parents[2] / '.github/architecture/frontiers/android-device-identity-v1.json'
+    return json.loads(path.read_text())
+
+
+def human_identity_manifest():
+    path = Path(__file__).resolve().parents[2] / '.github/architecture/frontiers/android-human-identity-v1.json'
     return json.loads(path.read_text())
 
 
@@ -533,6 +564,72 @@ sudo() {
         ):
             self.assertIn(forbidden, manifest['forbidden_content_patterns'])
         self.assertEqual(validate_manifest(manifest), [])
+
+    def test_human_identity_frontier_is_exact(self):
+        manifest = human_identity_manifest()
+        self.assertEqual(manifest['schema_version'], 1)
+        self.assertEqual(manifest['frontier_id'], 'android-human-identity-v1')
+        self.assertEqual(manifest['branch'], 'feat/android-human-identity-v1')
+        self.assertEqual(set(manifest['allowed_paths']), HUMAN_IDENTITY_ALLOWED_PATHS)
+        self.assertEqual(set(manifest['required_artifacts']), HUMAN_IDENTITY_ALLOWED_PATHS)
+        self.assertEqual(validate_manifest(manifest), [])
+
+    def test_human_identity_frontier_permits_internet_and_required_clients(self):
+        manifest = human_identity_manifest()
+        candidates = {
+            'app/src/main/AndroidManifest.xml':
+                '<uses-permission android:name="android.permission.INTERNET" />',
+            'app/build.gradle.kts': 'implementation("androidx.credentials:credentials:1.0.0")',
+            'integrations/google-identity/build.gradle.kts':
+                'implementation("com.google.android.libraries.identity.googleid:googleid:1.0.0")',
+            'sdk/client-api/build.gradle.kts': 'implementation("com.squareup.okhttp3:okhttp:1.0.0")',
+        }
+        self.assertEqual(evaluate_frontier(manifest, list(candidates), candidates), [])
+
+    def test_human_identity_frontier_blocks_disallowed_permissions(self):
+        manifest = human_identity_manifest()
+        path = 'app/src/main/AndroidManifest.xml'
+        for permission in (
+            'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION', 'ACCESS_BACKGROUND_LOCATION',
+            'POST_NOTIFICATIONS', 'CAMERA', 'RECORD_AUDIO', 'READ_CONTACTS', 'READ_SMS',
+            'RECEIVE_SMS', 'BLUETOOTH_CONNECT', 'BLUETOOTH_SCAN',
+        ):
+            with self.subTest(permission=permission):
+                errors = evaluate_frontier(
+                    manifest, [path], {path: 'android.permission.' + permission})
+                self.assertTrue(any(error.startswith('ARCH_DEPENDENCY_FORBIDDEN:')
+                                    for error in errors), errors)
+
+    def test_human_identity_frontier_blocks_prohibited_dependencies(self):
+        manifest = human_identity_manifest()
+        path = 'app/build.gradle.kts'
+        for dependency in (
+            'retrofit', 'ktor-client-okhttp', 'dagger', 'hilt', 'androidx.room', 'firebase',
+            'androidx.work', 'play-services-location', 'com.google.android.gms.location',
+            'home-assistant', 'whatsapp',
+        ):
+            with self.subTest(dependency=dependency):
+                errors = evaluate_frontier(manifest, [path], {path: dependency})
+                self.assertTrue(any(error.startswith('ARCH_DEPENDENCY_FORBIDDEN:')
+                                    for error in errors), errors)
+
+    def test_human_identity_frontier_cannot_mutate_its_own_manifest(self):
+        manifest = human_identity_manifest()
+        path = '.github/architecture/frontiers/android-human-identity-v1.json'
+        errors = evaluate_frontier(manifest, [path], {})
+        self.assertIn('ARCH_GOVERNANCE_MUTATION:' + path, errors)
+        self.assertIn('ARCH_PATH_NOT_ALLOWED:' + path, errors)
+
+    def test_human_identity_frontier_fails_closed_outside_its_scope(self):
+        manifest = human_identity_manifest()
+        for path in (
+            'core/device-identity/build.gradle.kts',
+            'data/device-identity/build.gradle.kts',
+            'README.md',
+        ):
+            with self.subTest(path=path):
+                errors = evaluate_frontier(manifest, [path], {})
+                self.assertIn('ARCH_PATH_NOT_ALLOWED:' + path, errors)
 
     def workflow(self):
         return (Path(__file__).resolve().parents[2] / '.github/workflows/governance.yml').read_text()
