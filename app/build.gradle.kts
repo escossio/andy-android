@@ -3,6 +3,9 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+val attentionRouterBaseUrl = providers.gradleProperty("attentionRouterBaseUrl").orElse("").get()
+val googleWebClientId = providers.gradleProperty("googleWebClientId").orElse("").get()
+
 android {
     namespace = "io.github.escossio.andy"
     compileSdk = 37
@@ -12,12 +15,15 @@ android {
         applicationId = "io.github.escossio.andy"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-bootstrap"
+        versionCode = 2
+        versionName = "0.2.0-human-identity"
+        buildConfigField("String", "ATTENTION_ROUTER_BASE_URL", "\"$attentionRouterBaseUrl\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -29,6 +35,10 @@ android {
 dependencies {
     implementation(project(":core:device-identity"))
     implementation(project(":data:device-identity"))
+    implementation(project(":features:onboarding"))
+    implementation(project(":sdk:client-api"))
+    implementation(project(":integrations:google-identity"))
+    implementation(libs.kotlinx.coroutines.core)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.foundation)
