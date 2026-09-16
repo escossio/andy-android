@@ -29,5 +29,5 @@ class AttentionRouterHumanAuthClient(private val baseUrl:String,private val tran
  private companion object { const val PATH="/api/v1/auth/google/challenges" }
 }
 class OkHttpHumanAuthTransport(private val baseUrl:String,private val http:OkHttpClient=OkHttpClient()):HumanAuthTransport {
- override fun post(path:String,body:String):TransportResponse { require(baseUrl.startsWith("https://")||baseUrl.startsWith("http://"));val request=Request.Builder().url(baseUrl.trimEnd('/')+path).post(body.toRequestBody("application/json".toMediaType())).build();http.newCall(request).execute{return TransportResponse(it.code,it.body?.string())} }
+ override fun post(path:String,body:String):TransportResponse { require(baseUrl.startsWith("https://")||baseUrl.startsWith("http://"));val request=Request.Builder().url(baseUrl.trimEnd('/')+path).post(body.toRequestBody("application/json".toMediaType())).build();return http.newCall(request).execute().use { response -> TransportResponse(response.code,response.body?.string()) } }
 }
