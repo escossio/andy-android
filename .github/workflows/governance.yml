@@ -384,6 +384,22 @@ jobs:
             echo 'DEVICE_IDENTITY_MODULE_NOT_PRESENT'
           fi
 
+      - name: Detect human identity modules
+        id: human_identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f core/human-identity/build.gradle.kts && \
+                -f sdk/client-api/build.gradle.kts && \
+                -f integrations/google-identity/build.gradle.kts && \
+                -f features/onboarding/build.gradle.kts ]]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+            echo 'HUMAN_IDENTITY_MODULES_PRESENT'
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo 'HUMAN_IDENTITY_MODULES_NOT_PRESENT'
+          fi
+
       - name: Install compile SDK and build tools
         if: steps.android_project.outputs.present == 'true'
         shell: bash
@@ -413,6 +429,17 @@ jobs:
           ./gradlew --no-daemon \
             :core:device-identity:test \
             :data:device-identity:testDebugUnitTest
+
+      - name: Run human identity JVM tests
+        if: steps.human_identity.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon \
+            :core:human-identity:test \
+            :sdk:client-api:test \
+            :integrations:google-identity:testDebugUnitTest \
+            :features:onboarding:testDebugUnitTest
 
       - name: Upload debug APK
         if: success() && steps.android_project.outputs.present == 'true'

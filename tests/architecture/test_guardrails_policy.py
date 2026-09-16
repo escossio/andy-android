@@ -730,13 +730,34 @@ sudo() {
                       '-f data/device-identity/build.gradle.kts ]]', detection)
         self.assertIn('DEVICE_IDENTITY_MODULE_PRESENT', detection)
         self.assertIn('DEVICE_IDENTITY_MODULE_NOT_PRESENT', detection)
+        human_detection = self.step(job, 'Detect human identity modules')
+        self.assertEqual(re.findall(r'^        if: .*$', human_detection, flags=re.MULTILINE), [])
+        for module in ('core/human-identity/build.gradle.kts',
+                       'sdk/client-api/build.gradle.kts',
+                       'integrations/google-identity/build.gradle.kts',
+                       'features/onboarding/build.gradle.kts'):
+            self.assertIn('-f ' + module, human_detection)
+        self.assertEqual(human_detection.count('&&'), 3)
+        self.assertIn("echo 'present=true' >> \"$GITHUB_OUTPUT\"", human_detection)
+        self.assertIn('HUMAN_IDENTITY_MODULES_PRESENT', human_detection)
+        self.assertIn("echo 'present=false' >> \"$GITHUB_OUTPUT\"", human_detection)
+        self.assertIn('HUMAN_IDENTITY_MODULES_NOT_PRESENT', human_detection)
         jvm_tests = self.step(job, 'Run device identity JVM tests')
         self.assert_step_condition(jvm_tests,
                                    "steps.device_identity.outputs.present == 'true'")
         self.assertIn(':core:device-identity:test', jvm_tests)
         self.assertIn(':data:device-identity:testDebugUnitTest', jvm_tests)
+        human_jvm_tests = self.step(job, 'Run human identity JVM tests')
+        self.assert_step_condition(human_jvm_tests,
+                                   "steps.human_identity.outputs.present == 'true'")
+        for task in (':core:human-identity:test', ':sdk:client-api:test',
+                     ':integrations:google-identity:testDebugUnitTest',
+                     ':features:onboarding:testDebugUnitTest'):
+            self.assertIn(task, human_jvm_tests)
+        self.assertIn('./gradlew --no-daemon', human_jvm_tests)
         self.assertLess(job.index(self.step(job, 'Build and test exact candidate')),
                         job.index(jvm_tests))
+        self.assertLess(job.index(jvm_tests), job.index(human_jvm_tests))
         self.assertIn('./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug', job)
         steps = re.split(r'^      - ', job, flags=re.MULTILINE)[1:]
         uploads = [step for step in steps if 'uses: actions/upload-artifact@' in step]
@@ -757,7 +778,8 @@ sudo() {
         self.assertNotRegex(job, r'\$\{\{\s*secrets\b|:\s*write(?:-all)?\b')
         for forbidden in ('GH_TOKEN', 'GITHUB_TOKEN', 'signing', 'deploy', 'publish',
                           'id-token', 'ssh', 'note', 'self-hosted', 'attention-router',
-                          'BASH_ENV', 'PYTHONPATH', 'environment:', 'env:', 'cache:'):
+                          'BASH_ENV', 'PYTHONPATH', 'environment:', 'env:', 'cache:',
+                          'GOOGLE_', 'google account', 'gcloud ', 'curl ', 'wget '):
             self.assertNotIn(forbidden, job)
 
     def test_workflow_keeps_security_jobs_base_trusted(self):
@@ -765,6 +787,31 @@ sudo() {
 
     def test_android_build_has_separate_unprivileged_boundary(self):
         self.assert_android_build_job(self.workflow())
+
+    def test_human_identity_detection_requires_all_modules_and_allows_absence(self):
+        text = self.workflow()
+        self.assert_android_build_job(text)
+        job = self.jobs(text)['android-build']
+        for module in ('core/human-identity/build.gradle.kts',
+                       'sdk/client-api/build.gradle.kts',
+                       'integrations/google-identity/build.gradle.kts',
+                       'features/onboarding/build.gradle.kts'):
+            with self.subTest(module=module), self.assertRaises(AssertionError):
+                self.assert_android_build_job(text.replace(module, 'missing/' + module, 1))
+        detection = self.step(job, 'Detect human identity modules')
+        self.assertIn("echo 'present=false' >> \"$GITHUB_OUTPUT\"", detection)
+        self.assertIn('HUMAN_IDENTITY_MODULES_NOT_PRESENT', detection)
+
+    def test_human_identity_tests_run_only_in_unprivileged_android_build(self):
+        text = self.workflow()
+        tasks = (':core:human-identity:test', ':sdk:client-api:test',
+                 ':integrations:google-identity:testDebugUnitTest',
+                 ':features:onboarding:testDebugUnitTest')
+        android_build = self.jobs(text)['android-build']
+        for task in tasks:
+            self.assertIn(task, android_build)
+            for trusted_job in ('governance-tests', 'secret-scan', 'architecture-guard'):
+                self.assertNotIn(task, self.jobs(text)[trusted_job])
 
     def test_trusted_boundary_rejects_candidate_execution_mutations(self):
         text = self.workflow()
@@ -846,7 +893,7 @@ sudo() {
         job = self.jobs(text)['android-build']
         for name in ('Install compile SDK and build tools', 'Build and test exact candidate',
                      'Detect device identity module', 'Run device identity JVM tests',
-                     'Upload debug APK'):
+                     'Run human identity JVM tests', 'Upload debug APK'):
             step = self.step(job, name)
             for replacement in ('', '        if: always()'):
                 weakened = re.sub(r'^        if: .*$', replacement, step, flags=re.MULTILINE)
