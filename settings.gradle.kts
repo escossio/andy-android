@@ -20,3 +20,7 @@ rootProject.name = "AndyAndroid"
 include(":app")
 include(":core:device-identity")
 include(":data:device-identity")
+include(":core:human-identity")
+include(":sdk:client-api")
+include(":integrations:google-identity")
+include(":features:onboarding")
