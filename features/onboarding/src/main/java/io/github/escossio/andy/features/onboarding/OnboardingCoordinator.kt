@@ -13,6 +13,7 @@ import io.github.escossio.andy.sdk.clientapi.ClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.ClientSessionCompleteResult
 import io.github.escossio.andy.sdk.clientapi.ClientSessionCredential
 import io.github.escossio.andy.sdk.clientapi.ClientSessionErrorCode
+import io.github.escossio.andy.sdk.clientapi.ClientSessionStore
 import io.github.escossio.andy.sdk.clientapi.ContinuationResult
 import io.github.escossio.andy.sdk.clientapi.DeviceBootstrapChallengeResult
 import io.github.escossio.andy.sdk.clientapi.DeviceBootstrapClient
@@ -22,9 +23,13 @@ import io.github.escossio.andy.sdk.clientapi.DeviceBootstrapRole
 import io.github.escossio.andy.sdk.clientapi.HumanAuthClient
 import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationGrant
 import io.github.escossio.andy.sdk.clientapi.HumanAuthErrorCode
+import io.github.escossio.andy.sdk.clientapi.NoopClientSessionStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.time.Instant
 
 data class OnboardingConfiguration(
     val clientApiBaseUrl: String,
@@ -41,6 +46,8 @@ class OnboardingCoordinator(
     private val sessionClient: ClientSessionClient,
     private val devicePublicKeySpki: () -> String?,
     private val signDeviceChallenge: (String) -> String?,
+    private val sessionStore: ClientSessionStore = NoopClientSessionStore,
+    private val now: () -> Instant = Instant::now,
     private val engine: HumanIdentityEngine = HumanIdentityEngine(ready),
 ) {
     private val mutable = MutableStateFlow(engine.state)
@@ -58,6 +65,7 @@ class OnboardingCoordinator(
     private var validatedIdentity: HumanIdentityReference? = null
     private var clientSession: ClientSessionCredential? = null
     private val deviceReady = ready
+    private val sessionMutex = Mutex()
 
     fun takeContinuationGrant(): HumanAuthContinuationGrant? {
         val grant = continuationGrant
@@ -65,12 +73,26 @@ class OnboardingCoordinator(
         return grant
     }
 
+    suspend fun restoreClientSessionOnStartup() {
+        sessionMutex.withLock {
+            if (!deviceReady || sessionMutable.value is ClientSessionState.Connected) {
+                return@withLock
+            }
+            restoreOrEstablish(automatic = true)
+        }
+    }
+
     suspend fun continueWithGoogle() {
-        continuationGrant = null
-        validatedIdentity = null
-        clientSession = null
-        bootstrapMutable.value = DeviceBootstrapState.Idle
-        sessionMutable.value = ClientSessionState.Idle
+        val reset = sessionMutex.withLock {
+            if (!clearStoredSession()) return@withLock false
+            continuationGrant = null
+            validatedIdentity = null
+            clientSession = null
+            bootstrapMutable.value = DeviceBootstrapState.Idle
+            sessionMutable.value = ClientSessionState.Idle
+            true
+        }
+        if (!reset) return
 
         if (engine.state == HumanIdentityState.DeviceIdentityUnavailable) {
             mutable.value = engine.begin()
@@ -124,16 +146,38 @@ class OnboardingCoordinator(
     }
 
     suspend fun continueWithExistingDevice() {
-        clientSession = null
-        sessionMutable.value = ClientSessionState.Idle
-        continueClientSession()
+        sessionMutex.withLock {
+            if (sessionMutable.value is ClientSessionState.Connected) return@withLock
+            restoreOrEstablish(automatic = false)
+        }
     }
 
     suspend fun retryClientSession() {
-        if (clientSession != null) {
-            loadAuthenticatedBootstrap()
-        } else {
-            continueClientSession()
+        sessionMutex.withLock {
+            if (sessionMutable.value is ClientSessionState.Connected) return@withLock
+
+            val current = clientSession
+            if (current == null) {
+                restoreOrEstablish(automatic = false)
+                return@withLock
+            }
+
+            if (!current.expiresAt.isAfter(now())) {
+                if (!clearStoredSession()) return@withLock
+                clientSession = null
+                establishFreshSession(automatic = false)
+                return@withLock
+            }
+
+            when (bootstrapCurrentSession()) {
+                SessionBootstrapOutcome.CONNECTED,
+                SessionBootstrapOutcome.FAILURE -> Unit
+                SessionBootstrapOutcome.INVALID -> {
+                    if (!clearStoredSession()) return@withLock
+                    clientSession = null
+                    establishFreshSession(automatic = false)
+                }
+            }
         }
     }
 
@@ -151,16 +195,20 @@ class OnboardingCoordinator(
         continueDeviceBootstrap()
     }
 
-    fun restartAuthentication() {
+    suspend fun restartAuthentication() {
+        val reset = sessionMutex.withLock {
+            if (!clearStoredSession()) return@withLock false
+            clientSession = null
+            sessionMutable.value = ClientSessionState.Idle
+            true
+        }
+        if (!reset) return
+
         continuationGrant = null
         validatedIdentity = null
-        clientSession = null
         bootstrapMutable.value = DeviceBootstrapState.Idle
-        sessionMutable.value = ClientSessionState.Idle
         mutable.value = engine.retry()
     }
-
-    fun retry() = restartAuthentication()
 
     private suspend fun continueDeviceBootstrap() {
         val grant = continuationGrant
@@ -204,14 +252,15 @@ class OnboardingCoordinator(
             )
         ) {
             is DeviceBootstrapCompleteResult.Success -> {
-                // A successful completion consumes the continuation authority server-side.
                 continuationGrant = null
                 if (result.established.humanIdentityId != identity.opaqueId) {
                     failBootstrap(DeviceBootstrapFailure.HUMAN_IDENTITY_MISMATCH)
                 } else {
                     bootstrapMutable.value =
                         DeviceBootstrapState.Established(result.established)
-                    continueClientSession()
+                    sessionMutex.withLock {
+                        establishFreshSession(automatic = false)
+                    }
                 }
             }
             is DeviceBootstrapCompleteResult.Failure ->
@@ -219,9 +268,43 @@ class OnboardingCoordinator(
         }
     }
 
-    private suspend fun continueClientSession() {
+    private suspend fun restoreOrEstablish(automatic: Boolean) {
+        val stored = try {
+            sessionStore.load()
+        } catch (_: Exception) {
+            failSession(ClientSessionFailure.SESSION_STORAGE_UNAVAILABLE)
+            return
+        }
+
+        if (stored == null) {
+            establishFreshSession(automatic)
+            return
+        }
+
+        if (!stored.expiresAt.isAfter(now())) {
+            if (!clearStoredSession()) return
+            clientSession = null
+            establishFreshSession(automatic)
+            return
+        }
+
+        clientSession = stored
+        sessionMutable.value = ClientSessionState.Restoring
+        when (bootstrapCurrentSession()) {
+            SessionBootstrapOutcome.CONNECTED,
+            SessionBootstrapOutcome.FAILURE -> Unit
+            SessionBootstrapOutcome.INVALID -> {
+                if (!clearStoredSession()) return
+                clientSession = null
+                establishFreshSession(automatic)
+            }
+        }
+    }
+
+    private suspend fun establishFreshSession(automatic: Boolean) {
         if (!deviceReady) {
-            return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+            failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+            return
         }
 
         sessionMutable.value = ClientSessionState.Establishing
@@ -243,8 +326,17 @@ class OnboardingCoordinator(
             )
         ) {
             is ClientSessionChallengeResult.Success -> result.challenge
-            is ClientSessionChallengeResult.Failure ->
-                return failSession(result.error.failure())
+            is ClientSessionChallengeResult.Failure -> {
+                if (
+                    automatic &&
+                    result.error == ClientSessionErrorCode.CLIENT_SESSION_DEVICE_REJECTED
+                ) {
+                    sessionMutable.value = ClientSessionState.Idle
+                } else {
+                    failSession(result.error.failure())
+                }
+                return
+            }
         }
 
         val signature = try {
@@ -260,8 +352,10 @@ class OnboardingCoordinator(
             )
         ) {
             is ClientSessionCompleteResult.Success -> result.session
-            is ClientSessionCompleteResult.Failure ->
-                return failSession(result.error.failure())
+            is ClientSessionCompleteResult.Failure -> {
+                failSession(result.error.failure())
+                return
+            }
         }
 
         val established =
@@ -278,19 +372,26 @@ class OnboardingCoordinator(
             )
         ) {
             clientSession = null
-            return failSession(ClientSessionFailure.SESSION_BOOTSTRAP_MISMATCH)
+            failSession(ClientSessionFailure.SESSION_BOOTSTRAP_MISMATCH)
+            return
         }
 
         clientSession = issued
-        loadAuthenticatedBootstrap()
+        if (bootstrapCurrentSession() == SessionBootstrapOutcome.INVALID) {
+            clearStoredSession()
+            clientSession = null
+        }
     }
 
-    private suspend fun loadAuthenticatedBootstrap() {
+    private suspend fun bootstrapCurrentSession(): SessionBootstrapOutcome {
         val session = clientSession
-            ?: return failSession(ClientSessionFailure.CLIENT_SESSION_UNAUTHENTICATED)
+            ?: run {
+                failSession(ClientSessionFailure.CLIENT_SESSION_UNAUTHENTICATED)
+                return SessionBootstrapOutcome.INVALID
+            }
 
         sessionMutable.value = ClientSessionState.LoadingBootstrap
-        when (val result = sessionClient.bootstrap(session)) {
+        return when (val result = sessionClient.bootstrap(session)) {
             is AuthenticatedBootstrapResult.Success -> {
                 val bootstrap = result.bootstrap
                 if (
@@ -300,15 +401,36 @@ class OnboardingCoordinator(
                     bootstrap.sessionExpiresAt != session.expiresAt ||
                     bootstrap.memberships.none { it.tenantId == bootstrap.activeTenantId }
                 ) {
-                    clientSession = null
                     failSession(ClientSessionFailure.SESSION_BOOTSTRAP_MISMATCH)
+                    SessionBootstrapOutcome.INVALID
                 } else {
+                    try {
+                        sessionStore.save(session)
+                    } catch (_: Exception) {
+                        failSession(ClientSessionFailure.SESSION_STORAGE_UNAVAILABLE)
+                        return SessionBootstrapOutcome.FAILURE
+                    }
                     sessionMutable.value = ClientSessionState.Connected(bootstrap)
+                    SessionBootstrapOutcome.CONNECTED
                 }
             }
-            is AuthenticatedBootstrapResult.Failure ->
+            is AuthenticatedBootstrapResult.Failure -> {
                 failSession(result.error.failure())
+                if (result.error.invalidatesStoredCredential()) {
+                    SessionBootstrapOutcome.INVALID
+                } else {
+                    SessionBootstrapOutcome.FAILURE
+                }
+            }
         }
+    }
+
+    private suspend fun clearStoredSession(): Boolean = try {
+        sessionStore.clear()
+        true
+    } catch (_: Exception) {
+        failSession(ClientSessionFailure.SESSION_STORAGE_UNAVAILABLE)
+        false
     }
 
     private fun failSession(reason: ClientSessionFailure) {
@@ -385,5 +507,19 @@ class OnboardingCoordinator(
             ClientSessionFailure.CLIENT_SESSION_UNAVAILABLE
         ClientSessionErrorCode.UNEXPECTED_RESPONSE ->
             ClientSessionFailure.UNEXPECTED_RESPONSE
+    }
+
+    private fun ClientSessionErrorCode.invalidatesStoredCredential() = when (this) {
+        ClientSessionErrorCode.CLIENT_SESSION_DEVICE_REJECTED,
+        ClientSessionErrorCode.CLIENT_SESSION_TENANT_FORBIDDEN,
+        ClientSessionErrorCode.CLIENT_SESSION_UNAUTHENTICATED,
+        ClientSessionErrorCode.CLIENT_SESSION_AUTHORITY_REJECTED -> true
+        else -> false
+    }
+
+    private enum class SessionBootstrapOutcome {
+        CONNECTED,
+        INVALID,
+        FAILURE,
     }
 }
