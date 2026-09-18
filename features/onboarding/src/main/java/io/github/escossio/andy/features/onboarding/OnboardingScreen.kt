@@ -89,7 +89,6 @@ private fun BootstrapContent(
     }
 }
 
-
 @Composable
 private fun SessionContent(
     sessionState: ClientSessionState,
@@ -98,6 +97,8 @@ private fun SessionContent(
 ) {
     when (sessionState) {
         ClientSessionState.Idle -> Unit
+        ClientSessionState.Restoring ->
+            BasicText("Restoring secure client session…")
         ClientSessionState.Establishing ->
             BasicText("Establishing secure client session…")
         ClientSessionState.LoadingBootstrap ->

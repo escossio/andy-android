@@ -4,6 +4,7 @@ import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
 
 sealed interface ClientSessionState {
     data object Idle : ClientSessionState
+    data object Restoring : ClientSessionState
     data object Establishing : ClientSessionState
     data object LoadingBootstrap : ClientSessionState
     data class Connected(val bootstrap: AuthenticatedClientBootstrap) : ClientSessionState
@@ -12,6 +13,7 @@ sealed interface ClientSessionState {
 
 enum class ClientSessionFailure {
     DEVICE_IDENTITY_UNAVAILABLE,
+    SESSION_STORAGE_UNAVAILABLE,
     NETWORK_FAILURE,
     CLIENT_SESSION_DEVICE_REJECTED,
     CLIENT_SESSION_CHALLENGE_NOT_FOUND,

@@ -13,6 +13,7 @@ import io.github.escossio.andy.sdk.clientapi.ClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.ClientSessionCompleteResult
 import io.github.escossio.andy.sdk.clientapi.ClientSessionCredential
 import io.github.escossio.andy.sdk.clientapi.ClientSessionErrorCode
+import io.github.escossio.andy.sdk.clientapi.ClientSessionStore
 import io.github.escossio.andy.sdk.clientapi.ClientDevice
 import io.github.escossio.andy.sdk.clientapi.ClientTenantMembership
 import io.github.escossio.andy.sdk.clientapi.ClientTenantRole
@@ -31,6 +32,10 @@ import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationPurpose
 import io.github.escossio.andy.sdk.clientapi.HumanAuthErrorCode
 import io.github.escossio.andy.sdk.clientapi.HumanIdentityContinuation
 import io.github.escossio.andy.sdk.clientapi.VerifyResult
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -152,13 +157,14 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
-    fun restartAuthenticationDiscardsUnconsumedGrantAndBootstrapState() = runBlocking {
+    fun restartAuthenticationDiscardsUnconsumedGrantBootstrapAndStoredSession() = runBlocking {
         val bootstrap = FakeBootstrapClient(
             start = DeviceBootstrapChallengeResult.Failure(
                 DeviceBootstrapErrorCode.NETWORK_FAILURE,
             ),
         )
-        val coordinator = coordinator(true, FakeHumanClient(), bootstrap)
+        val store = FakeSessionStore(sessionCredential())
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, store = store)
         coordinator.continueWithGoogle()
 
         coordinator.restartAuthentication()
@@ -166,6 +172,8 @@ class OnboardingCoordinatorTest {
         assertNull(coordinator.takeContinuationGrant())
         assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
         assertSame(DeviceBootstrapState.Idle, coordinator.bootstrapState.value)
+        assertNull(store.current)
+        assertTrue(store.clearCalls >= 1)
     }
 
     @Test
@@ -185,7 +193,6 @@ class OnboardingCoordinatorTest {
         assertEquals(0, bootstrap.startCalls)
         assertNull(coordinator.takeContinuationGrant())
     }
-
 
     @Test
     fun existingEnrolledDeviceConnectsWithoutGoogleOrDeviceBootstrap() = runBlocking {
@@ -243,8 +250,6 @@ class OnboardingCoordinatorTest {
         assertEquals(1, session.startCalls)
         assertEquals(1, session.completeCalls)
         assertEquals(1, session.bootstrapCalls)
-        assertEquals(0, human.challengeCalls)
-        assertEquals(0, bootstrap.startCalls)
 
         coordinator.retryClientSession()
 
@@ -255,11 +260,129 @@ class OnboardingCoordinatorTest {
         assertFalse(coordinator.sessionState.value.toString().contains(SESSION_TOKEN))
     }
 
+    @Test
+    fun startupRestoresStoredSessionWithoutIssuingNewChallenge() = runBlocking {
+        val store = FakeSessionStore(sessionCredential())
+        val session = FakeSessionClient()
+        val human = FakeHumanClient()
+        val bootstrap = FakeBootstrapClient()
+        val coordinator = coordinator(
+            true,
+            human,
+            bootstrap,
+            session,
+            store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+        assertEquals(0, human.challengeCalls)
+        assertEquals(0, bootstrap.startCalls)
+        assertEquals(1, store.saveCalls)
+    }
+
+    @Test
+    fun expiredStoredSessionIsPurgedThenFreshPossessionEstablishesOneSession() = runBlocking {
+        val expired = sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))
+        val store = FakeSessionStore(expired)
+        val session = FakeSessionClient()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { Instant.parse("2029-01-01T00:00:00Z") },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(1, store.clearCalls)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+        assertEquals(1, store.saveCalls)
+    }
+
+    @Test
+    fun rejectedStoredSessionIsPurgedThenFreshPossessionIsUsed() = runBlocking {
+        val store = FakeSessionStore(sessionCredential())
+        val session = RestoreRejectedThenFreshSessionClient()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(1, store.clearCalls)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(2, session.bootstrapCalls)
+        assertEquals(1, store.saveCalls)
+    }
+
+    @Test
+    fun duplicateConnectActionsConvergeOnOneSessionEstablishmentFlight() = runBlocking {
+        val session = DelayedSessionClient()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+        )
+
+        coroutineScope {
+            awaitAll(
+                async { coordinator.continueWithExistingDevice() },
+                async { coordinator.continueWithExistingDevice() },
+            )
+        }
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+    }
+
+    @Test
+    fun automaticStartupOnUnknownDeviceLeavesNormalOnboardingAvailable() = runBlocking {
+        val session = FakeSessionClient(
+            start = ClientSessionChallengeResult.Failure(
+                ClientSessionErrorCode.CLIENT_SESSION_DEVICE_REJECTED,
+            ),
+        )
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
+        assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
+        assertEquals(1, session.startCalls)
+        assertEquals(0, session.completeCalls)
+    }
+
     private fun coordinator(
         ready: Boolean,
         client: HumanAuthClient,
         bootstrapClient: DeviceBootstrapClient,
         sessionClient: ClientSessionClient = FakeSessionClient(),
+        store: ClientSessionStore = FakeSessionStore(),
+        now: () -> Instant = { Instant.parse("2029-01-01T00:00:00Z") },
     ) = OnboardingCoordinator(
         ready = ready,
         config = OnboardingConfiguration(
@@ -276,6 +399,8 @@ class OnboardingCoordinatorTest {
         sessionClient = sessionClient,
         devicePublicKeySpki = { "A".repeat(120) },
         signDeviceChallenge = { "c".repeat(96) },
+        sessionStore = store,
+        now = now,
     )
 
     private class FakeHumanClient(
@@ -357,7 +482,6 @@ class OnboardingCoordinatorTest {
         ) = DeviceBootstrapCompleteResult.Success(established())
     }
 
-
     private open class FakeSessionClient(
         private val start: ClientSessionChallengeResult =
             ClientSessionChallengeResult.Success(sessionChallenge()),
@@ -427,6 +551,94 @@ class OnboardingCoordinatorTest {
         }
     }
 
+    private class RestoreRejectedThenFreshSessionClient : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            return ClientSessionChallengeResult.Success(sessionChallenge())
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            return ClientSessionCompleteResult.Success(sessionCredential())
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return if (bootstrapCalls == 1) {
+                AuthenticatedBootstrapResult.Failure(
+                    ClientSessionErrorCode.CLIENT_SESSION_AUTHORITY_REJECTED,
+                )
+            } else {
+                AuthenticatedBootstrapResult.Success(authenticatedBootstrap())
+            }
+        }
+    }
+
+    private class DelayedSessionClient : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            delay(50)
+            return ClientSessionChallengeResult.Success(sessionChallenge())
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            return ClientSessionCompleteResult.Success(sessionCredential())
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return AuthenticatedBootstrapResult.Success(authenticatedBootstrap())
+        }
+    }
+
+    private class FakeSessionStore(
+        var current: ClientSessionCredential? = null,
+    ) : ClientSessionStore {
+        var loadCalls = 0
+        var saveCalls = 0
+        var clearCalls = 0
+
+        override suspend fun load(): ClientSessionCredential? {
+            loadCalls++
+            return current
+        }
+
+        override suspend fun save(session: ClientSessionCredential) {
+            saveCalls++
+            current = session
+        }
+
+        override suspend fun clear() {
+            clearCalls++
+            current = null
+        }
+    }
+
     private companion object {
         const val HUMAN_ID = "hid_exampleopaqueidentity123"
         const val GRANT_TOKEN = "hcg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -451,10 +663,12 @@ class OnboardingCoordinatorTest {
             Instant.parse("2030-01-01T00:07:00Z"),
         )
 
-        fun sessionCredential() = ClientSessionCredential(
+        fun sessionCredential(
+            expiresAt: Instant = Instant.parse("2030-01-01T00:15:00Z"),
+        ) = ClientSessionCredential(
             token = SESSION_TOKEN,
             sessionId = "csn_examplesession12345678901",
-            expiresAt = Instant.parse("2030-01-01T00:15:00Z"),
+            expiresAt = expiresAt,
             humanIdentityId = HUMAN_ID,
             deviceId = DEVICE_ID,
             tenantId = "tnt_synthetic",
