@@ -221,7 +221,9 @@ class AttentionRouterDeviceBootstrapClient(
         }
         val initialTenantId = when (val initial = value["initial_tenant_id"]) {
             JsonNull -> null
-            is JsonPrimitive -> initial.contentOrNull
+            is JsonPrimitive -> initial
+                .takeIf { it.isString }
+                ?.contentOrNull
                 ?.takeIf { it.isNotBlank() && it.length <= 64 }
                 ?: return unexpectedComplete()
             else -> return unexpectedComplete()
@@ -253,7 +255,9 @@ class AttentionRouterDeviceBootstrapClient(
         val roleValues = deviceValue["roles"] as? JsonArray ?: return unexpectedComplete()
         if (roleValues.isEmpty() || roleValues.size > 2) return unexpectedComplete()
         val roles = roleValues.map { element ->
-            val raw = (element as? JsonPrimitive)?.contentOrNull ?: return unexpectedComplete()
+            val primitive = element as? JsonPrimitive ?: return unexpectedComplete()
+            if (!primitive.isString) return unexpectedComplete()
+            val raw = primitive.contentOrNull ?: return unexpectedComplete()
             try {
                 DeviceBootstrapRole.valueOf(raw)
             } catch (_: Exception) {
@@ -316,7 +320,10 @@ class AttentionRouterDeviceBootstrapClient(
     }
 
     private fun JsonObject.str(key: String) =
-        (this[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        (this[key] as? JsonPrimitive)
+            ?.takeIf { it.isString }
+            ?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
 
     private companion object {
         const val PATH = "/api/v1/bootstrap/device/challenges"
