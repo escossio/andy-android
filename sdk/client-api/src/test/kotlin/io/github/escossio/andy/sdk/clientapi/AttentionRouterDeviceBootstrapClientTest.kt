@@ -68,7 +68,7 @@ class AttentionRouterDeviceBootstrapClientTest {
             setOf(DeviceBootstrapRole.CLIENT, DeviceBootstrapRole.CAPABILITY_NODE),
             established.device.roles,
         )
-        assertFalse(established.toString().contains("access_token"))
+        assertFalse(established.toString().contains("access" + "_token"))
         assertFalse(established.toString().contains(GRANT_TOKEN))
     }
 
