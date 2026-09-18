@@ -23,6 +23,7 @@ import io.github.escossio.andy.features.onboarding.OnboardingConfiguration
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.features.onboarding.OnboardingScreen
 import io.github.escossio.andy.integrations.googleidentity.AndroidGoogleCredentialAcquirer
+import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterDeviceBootstrapClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
 import kotlinx.coroutines.launch
@@ -82,6 +83,9 @@ private fun AndyBootstrap(
             bootstrapClient = AttentionRouterDeviceBootstrapClient(
                 BuildConfig.ATTENTION_ROUTER_BASE_URL,
             ),
+            sessionClient = AttentionRouterClientSessionClient(
+                BuildConfig.ATTENTION_ROUTER_BASE_URL,
+            ),
             devicePublicKeySpki = {
                 when (val result = bootstrapIdentity.publicKey()) {
                     is DeviceBootstrapPublicKeyResult.Ready ->
@@ -100,6 +104,7 @@ private fun AndyBootstrap(
     }
     val state by coordinator.state.collectAsState()
     val bootstrapState by coordinator.bootstrapState.collectAsState()
+    val sessionState by coordinator.sessionState.collectAsState()
 
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -108,12 +113,19 @@ private fun AndyBootstrap(
         OnboardingScreen(
             state = state,
             bootstrapState = bootstrapState,
+            sessionState = sessionState,
             onContinue = {
                 scope.launch { coordinator.continueWithGoogle() }
+            },
+            onContinueSession = {
+                scope.launch { coordinator.continueWithExistingDevice() }
             },
             onRetryHuman = coordinator::restartAuthentication,
             onRetryBootstrap = {
                 scope.launch { coordinator.retryDeviceBootstrap() }
+            },
+            onRetrySession = {
+                scope.launch { coordinator.retryClientSession() }
             },
         )
     }
