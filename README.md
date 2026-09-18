@@ -6,7 +6,13 @@ The authoritative platform/backend is [Attention Router](https://github.com/esco
 
 ## Status
 
-Governance bootstrap only. No functional Android application is implemented yet.
+Human Identity V0.3A is implemented and live-proven on a physical Android device.
+
+The current flow reaches the public Attention Router Client API over HTTPS, completes real Google Human Identity validation, receives a short-lived `DEVICE_BOOTSTRAP` continuation grant, and keeps that credential in memory at this frontier.
+
+The proof intentionally stopped before consuming the grant. No device bootstrap, tenant, membership, enrollment, or session was created.
+
+See [`docs/checkpoints/V03A_LIVE_PROOF_20260917.md`](docs/checkpoints/V03A_LIVE_PROOF_20260917.md).
 
 ## Identity
 
