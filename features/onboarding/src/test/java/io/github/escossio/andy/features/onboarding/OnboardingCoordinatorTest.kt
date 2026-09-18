@@ -4,7 +4,15 @@ import io.github.escossio.andy.core.humanidentity.HumanIdentityReference
 import io.github.escossio.andy.core.humanidentity.HumanIdentityState
 import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
+import io.github.escossio.andy.sdk.clientapi.ClientSessionChallenge
+import io.github.escossio.andy.sdk.clientapi.ClientSessionChallengeResult
+import io.github.escossio.andy.sdk.clientapi.ClientSessionClient
+import io.github.escossio.andy.sdk.clientapi.ClientSessionCompleteResult
+import io.github.escossio.andy.sdk.clientapi.ClientSessionCredential
+import io.github.escossio.andy.sdk.clientapi.ClientSessionErrorCode
 import io.github.escossio.andy.sdk.clientapi.ClientDevice
 import io.github.escossio.andy.sdk.clientapi.ClientTenantMembership
 import io.github.escossio.andy.sdk.clientapi.ClientTenantRole
@@ -69,7 +77,7 @@ class OnboardingCoordinatorTest {
             (coordinator.bootstrapState.value as DeviceBootstrapState.Established).authority
         assertEquals(HUMAN_ID, established.humanIdentityId)
         assertEquals("tnt_synthetic", established.initialTenantId)
-        assertEquals("cdev_synthetic", established.device.deviceId)
+        assertEquals(DEVICE_ID, established.device.deviceId)
         assertEquals(1, bootstrap.startCalls)
         assertEquals(1, bootstrap.completeCalls)
         assertNull(coordinator.takeContinuationGrant())
@@ -178,10 +186,80 @@ class OnboardingCoordinatorTest {
         assertNull(coordinator.takeContinuationGrant())
     }
 
+
+    @Test
+    fun existingEnrolledDeviceConnectsWithoutGoogleOrDeviceBootstrap() = runBlocking {
+        val human = FakeHumanClient()
+        val bootstrap = FakeBootstrapClient()
+        val session = FakeSessionClient()
+        val coordinator = coordinator(true, human, bootstrap, session)
+
+        coordinator.continueWithExistingDevice()
+
+        assertEquals(0, human.challengeCalls)
+        assertEquals(0, bootstrap.startCalls)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals("tnt_synthetic", connected.bootstrap.activeTenantId)
+        assertEquals(DEVICE_ID, connected.bootstrap.device.deviceId)
+        assertFalse(connected.toString().contains(SESSION_TOKEN))
+    }
+
+    @Test
+    fun successfulDeviceBootstrapContinuesIntoClientSessionAutomatically() = runBlocking {
+        val session = FakeSessionClient()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+        )
+
+        coordinator.continueWithGoogle()
+
+        assertTrue(coordinator.bootstrapState.value is DeviceBootstrapState.Established)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+    }
+
+    @Test
+    fun authenticatedBootstrapRetryReusesSameInMemorySession() = runBlocking {
+        val human = FakeHumanClient()
+        val bootstrap = FakeBootstrapClient()
+        val session = SequencedSessionClient()
+        val coordinator = coordinator(true, human, bootstrap, session)
+
+        coordinator.continueWithExistingDevice()
+
+        assertEquals(
+            ClientSessionState.Failure(ClientSessionFailure.NETWORK_FAILURE),
+            coordinator.sessionState.value,
+        )
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+        assertEquals(0, human.challengeCalls)
+        assertEquals(0, bootstrap.startCalls)
+
+        coordinator.retryClientSession()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(2, session.bootstrapCalls)
+        assertFalse(coordinator.sessionState.value.toString().contains(SESSION_TOKEN))
+    }
+
     private fun coordinator(
         ready: Boolean,
         client: HumanAuthClient,
         bootstrapClient: DeviceBootstrapClient,
+        sessionClient: ClientSessionClient = FakeSessionClient(),
     ) = OnboardingCoordinator(
         ready = ready,
         config = OnboardingConfiguration(
@@ -195,6 +273,7 @@ class OnboardingCoordinatorTest {
                 ProviderCredentialResult.Token("token-synthetic")
         },
         bootstrapClient = bootstrapClient,
+        sessionClient = sessionClient,
         devicePublicKeySpki = { "A".repeat(120) },
         signDeviceChallenge = { "c".repeat(96) },
     )
@@ -278,9 +357,81 @@ class OnboardingCoordinatorTest {
         ) = DeviceBootstrapCompleteResult.Success(established())
     }
 
+
+    private open class FakeSessionClient(
+        private val start: ClientSessionChallengeResult =
+            ClientSessionChallengeResult.Success(sessionChallenge()),
+        private val complete: ClientSessionCompleteResult =
+            ClientSessionCompleteResult.Success(sessionCredential()),
+        private val bootstrap: AuthenticatedBootstrapResult =
+            AuthenticatedBootstrapResult.Success(authenticatedBootstrap()),
+    ) : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            return start
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            return complete
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return bootstrap
+        }
+    }
+
+    private class SequencedSessionClient : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            return ClientSessionChallengeResult.Success(sessionChallenge())
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            return ClientSessionCompleteResult.Success(sessionCredential())
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return if (bootstrapCalls == 1) {
+                AuthenticatedBootstrapResult.Failure(ClientSessionErrorCode.NETWORK_FAILURE)
+            } else {
+                AuthenticatedBootstrapResult.Success(authenticatedBootstrap())
+            }
+        }
+    }
+
     private companion object {
         const val HUMAN_ID = "hid_exampleopaqueidentity123"
         const val GRANT_TOKEN = "hcg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        const val SESSION_TOKEN = "cst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        const val DEVICE_ID = "cdev_exampledevice12345678901"
 
         fun grant() = HumanAuthContinuationGrant(
             GRANT_TOKEN,
@@ -294,6 +445,41 @@ class OnboardingCoordinatorTest {
             Instant.parse("2030-01-01T00:06:00Z"),
         )
 
+        fun sessionChallenge() = ClientSessionChallenge(
+            "csc_examplechallenge123456789",
+            "s".repeat(43),
+            Instant.parse("2030-01-01T00:07:00Z"),
+        )
+
+        fun sessionCredential() = ClientSessionCredential(
+            token = SESSION_TOKEN,
+            sessionId = "csn_examplesession12345678901",
+            expiresAt = Instant.parse("2030-01-01T00:15:00Z"),
+            humanIdentityId = HUMAN_ID,
+            deviceId = DEVICE_ID,
+            tenantId = "tnt_synthetic",
+        )
+
+        fun authenticatedBootstrap() = AuthenticatedClientBootstrap(
+            humanIdentityId = HUMAN_ID,
+            activeTenantId = "tnt_synthetic",
+            memberships = listOf(
+                ClientTenantMembership(
+                    "ctm_synthetic",
+                    "tnt_synthetic",
+                    ClientTenantRole.OWNER,
+                ),
+            ),
+            device = ClientDevice(
+                DEVICE_ID,
+                "sha256:" + "f".repeat(64),
+                "Synthetic Android",
+                setOf(DeviceBootstrapRole.CLIENT, DeviceBootstrapRole.CAPABILITY_NODE),
+            ),
+            sessionExpiresAt = Instant.parse("2030-01-01T00:15:00Z"),
+            serverTime = Instant.parse("2030-01-01T00:08:00Z"),
+        )
+
         fun established(humanId: String = HUMAN_ID) = DeviceBootstrapEstablished(
             humanIdentityId = humanId,
             memberships = listOf(
@@ -305,7 +491,7 @@ class OnboardingCoordinatorTest {
             ),
             initialTenantId = "tnt_synthetic",
             device = ClientDevice(
-                "cdev_synthetic",
+                DEVICE_ID,
                 "sha256:" + "f".repeat(64),
                 "Synthetic Android",
                 setOf(DeviceBootstrapRole.CLIENT, DeviceBootstrapRole.CAPABILITY_NODE),
