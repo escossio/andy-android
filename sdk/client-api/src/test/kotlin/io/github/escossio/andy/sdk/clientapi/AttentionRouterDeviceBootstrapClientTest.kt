@@ -101,10 +101,10 @@ class AttentionRouterDeviceBootstrapClientTest {
             null,
             "",
             "not-json",
-            valid.replace(""status":"ACTIVE"}", ""status":"ACTIVE","extra":true}"),
+            valid.replace("\"status\":\"ACTIVE\"}", "\"status\":\"ACTIVE\",\"extra\":true}"),
             valid.replace(FINGERPRINT, "sha256:bad"),
-            valid.replace(""roles":["CLIENT"]", ""roles":["CLIENT","CLIENT"]"),
-            valid.replace(""initial_tenant_id":"tnt_a"", ""initial_tenant_id":123"),
+            valid.replace("\"roles\":[\"CLIENT\"]", "\"roles\":[\"CLIENT\",\"CLIENT\"]"),
+            valid.replace("\"initial_tenant_id\":\"tnt_a\"", "\"initial_tenant_id\":123"),
         )
         for (body in malformed) {
             assertEquals(
