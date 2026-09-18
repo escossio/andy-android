@@ -2,11 +2,15 @@ package io.github.escossio.andy.data.deviceidentity
 
 import android.content.Context
 import io.github.escossio.andy.core.deviceidentity.DEVICE_IDENTITY_KEY_ALIAS
+import io.github.escossio.andy.core.deviceidentity.DeviceBootstrapIdentity
 import io.github.escossio.andy.core.deviceidentity.DeviceIdentityEngine
 import io.github.escossio.andy.core.deviceidentity.DeviceIdentityManager
 import java.security.SecureRandom
 
 object AndroidDeviceIdentityFactory {
+    fun createBootstrapIdentity(): DeviceBootstrapIdentity =
+        AndroidDeviceBootstrapIdentity()
+
     fun create(context: Context): DeviceIdentityManager {
         val random = SecureRandom()
         return create(
