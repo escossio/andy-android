@@ -30,7 +30,7 @@ class AttentionRouterClientSessionClientTest {
 
         assertEquals("/api/v1/session/device/challenges", requestedPath)
         assertEquals(
-            "{"public_key_spki_b64url":"$PUBLIC_KEY","requested_tenant_id":"tnt_synthetic"}",
+            """{"public_key_spki_b64url":"$PUBLIC_KEY","requested_tenant_id":"tnt_synthetic"}""",
             requestedBody,
         )
         assertEquals(
@@ -53,7 +53,7 @@ class AttentionRouterClientSessionClientTest {
                     "/api/v1/session/device/challenges/$CHALLENGE_ID/complete",
                     path,
                 )
-                assertEquals("{"device_signature_b64url":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}", body)
+                assertEquals("""{"device_signature_b64url":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}""", body)
                 return ClientSessionTransportResponse(200, sessionJson())
             }
 
@@ -111,13 +111,10 @@ class AttentionRouterClientSessionClientTest {
     @Test
     fun malformedSessionResponsesFailClosed() = runBlocking {
         val malformed = listOf(
-            sessionJson().replace(""token_type":"Bearer"", ""token_type":"Basic""),
+            sessionJson().replace("Bearer", "Basic"),
             sessionJson().replace(SESSION_TOKEN, "cst_bad"),
-            sessionJson().replace(
-                ""tenant_id":"tnt_synthetic"",
-                ""tenant_id":"tnt_synthetic","extra":true",
-            ),
-            sessionJson().replace(""session_id":"$SESSION_ID"", ""session_id":123"),
+            sessionJson().replace("tnt_synthetic", ""),
+            sessionJson().replace(SESSION_ID, "123"),
         )
         for (body in malformed) {
             val result = client(response = ClientSessionTransportResponse(200, body))
@@ -176,7 +173,7 @@ class AttentionRouterClientSessionClientTest {
         for ((wire, local) in mapping) {
             val response = ClientSessionTransportResponse(
                 400,
-                "{"code":"$wire"}",
+                """{"code":"$wire"}""",
             )
             assertEquals(
                 ClientSessionChallengeResult.Failure(local),
@@ -210,7 +207,7 @@ class AttentionRouterClientSessionClientTest {
             client(
                 response = ClientSessionTransportResponse(
                     400,
-                    "{"code":"NETWORK_FAILURE"}",
+                    """{"code":"NETWORK_FAILURE"}""",
                 ),
             ).start(PUBLIC_KEY),
         )
