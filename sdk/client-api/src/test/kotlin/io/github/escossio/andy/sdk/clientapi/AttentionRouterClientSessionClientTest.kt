@@ -130,9 +130,9 @@ class AttentionRouterClientSessionClientTest {
 
     @Test
     fun bootstrapRejectsActiveTenantOutsideMemberships() = runBlocking {
-        val body = bootstrapJson().replace(
-            ""active_tenant_id":"tnt_synthetic"",
-            ""active_tenant_id":"tnt_other"",
+        val body = bootstrapJson().replaceFirst(
+            "tnt_synthetic",
+            "tnt_other",
         )
         val result = client(
             getResponse = ClientSessionTransportResponse(200, body),
