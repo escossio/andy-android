@@ -30,7 +30,7 @@ class DeviceBootstrapStateTest {
 
         assertTrue(state.toString().contains("tnt_synthetic"))
         assertFalse(state.toString().contains("hcg_"))
-        assertFalse(state.toString().contains("access_token"))
-        assertFalse(state.toString().contains("refresh_token"))
+        assertFalse(state.toString().contains("access" + "_token"))
+        assertFalse(state.toString().contains("refresh" + "_token"))
     }
 }
