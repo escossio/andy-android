@@ -264,13 +264,13 @@ class AttentionRouterClientSessionClientTest {
     )
 
     private fun challengeJson() =
-        "{"session_challenge_id":"$CHALLENGE_ID","challenge_b64url":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expires_at":"2030-01-01T00:05:00Z"}"
+        """{"session_challenge_id":"$CHALLENGE_ID","challenge_b64url":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expires_at":"2030-01-01T00:05:00Z"}"""
 
     private fun sessionJson() =
-        "{"status":"CLIENT_SESSION_ESTABLISHED","session":{"session_id":"$SESSION_ID","session_token":"$SESSION_TOKEN","token_type":"Bearer","expires_at":"2030-01-01T00:15:00Z","human_identity_id":"$HUMAN_ID","device_id":"$DEVICE_ID","tenant_id":"tnt_synthetic"}}"
+        """{"status":"CLIENT_SESSION_ESTABLISHED","session":{"session_id":"$SESSION_ID","session_token":"$SESSION_TOKEN","token_type":"Bearer","expires_at":"2030-01-01T00:15:00Z","human_identity_id":"$HUMAN_ID","device_id":"$DEVICE_ID","tenant_id":"tnt_synthetic"}}"""
 
     private fun bootstrapJson() =
-        "{"contract_version":"1","human_identity_id":"$HUMAN_ID","active_tenant_id":"tnt_synthetic","memberships":[{"membership_id":"ctm_synthetic","tenant_id":"tnt_synthetic","role":"OWNER","status":"ACTIVE"}],"device":{"device_id":"$DEVICE_ID","public_key_fingerprint":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","canonical_name":"Synthetic Android","platform":"ANDROID","roles":["CLIENT","CAPABILITY_NODE"],"status":"ACTIVE"},"session_expires_at":"2030-01-01T00:15:00Z","server_time":"2030-01-01T00:01:00Z"}"
+        """{"contract_version":"1","human_identity_id":"$HUMAN_ID","active_tenant_id":"tnt_synthetic","memberships":[{"membership_id":"ctm_synthetic","tenant_id":"tnt_synthetic","role":"OWNER","status":"ACTIVE"}],"device":{"device_id":"$DEVICE_ID","public_key_fingerprint":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","canonical_name":"Synthetic Android","platform":"ANDROID","roles":["CLIENT","CAPABILITY_NODE"],"status":"ACTIVE"},"session_expires_at":"2030-01-01T00:15:00Z","server_time":"2030-01-01T00:01:00Z"}"""
 
     private fun failTransport(): ClientSessionTransportResponse =
         throw AssertionError("unexpected transport call")
