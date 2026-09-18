@@ -109,7 +109,7 @@ class AttentionRouterDeviceBootstrapClient(
                 put("canonical_device_name", canonicalDeviceName)
                 put("platform", "ANDROID")
                 putJsonArray("roles") {
-                    roles.sortedBy { it.name }.forEach { add(it.name) }
+                    roles.sortedBy { it.name }.forEach { add(JsonPrimitive(it.name)) }
                 }
             }.toString()
         }
