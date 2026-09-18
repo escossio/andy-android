@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-client-session-v0-3c",
+  "branch": "feat/android-client-session-v0-3c",
+  "allowed_paths": [
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientSessionClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientSessionClientTest.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ClientSessionState.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/ClientSessionStateTest.kt"
+  ],
+  "required_artifacts": [
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientSessionClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientSessionClientTest.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ClientSessionState.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/ClientSessionStateTest.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "firebase",
+    "androidx\\.work",
+    "play-services-location",
+    "com\\.google\\.android\\.gms\\.location",
+    "home.?assistant",
+    "whatsapp",
+    "refresh_token",
+    "email.?challenge",
+    "SharedPreferences",
+    "android\\.permission\\.(ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|ACCESS_BACKGROUND_LOCATION|POST_NOTIFICATIONS|CAMERA|RECORD_AUDIO|READ_CONTACTS|READ_SMS|RECEIVE_SMS|BLUETOOTH_CONNECT|BLUETOOTH_SCAN)"
+  ]
+}
