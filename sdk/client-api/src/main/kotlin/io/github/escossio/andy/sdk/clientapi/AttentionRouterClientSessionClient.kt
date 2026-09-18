@@ -22,6 +22,11 @@ data class ClientSessionChallenge(
     val expiresAt: Instant,
 )
 
+private val CREDENTIAL_SESSION_TOKEN = Regex("^cst_[A-Za-z0-9_-]{43}$")
+private val CREDENTIAL_SESSION_ID = Regex("^csn_[A-Za-z0-9_-]{20,}$")
+private val CREDENTIAL_HUMAN_ID = Regex("^hid_[A-Za-z0-9_-]{20,}$")
+private val CREDENTIAL_DEVICE_ID = Regex("^cdev_[A-Za-z0-9_-]{20,}$")
+
 class ClientSessionCredential(
     token: String,
     val sessionId: String,
@@ -33,14 +38,14 @@ class ClientSessionCredential(
     private val credential = token
 
     init {
-        require(token.matches(SESSION_TOKEN))
-        require(sessionId.matches(SESSION_ID))
-        require(humanIdentityId.matches(HUMAN_ID))
-        require(deviceId.matches(DEVICE_ID))
+        require(token.matches(CREDENTIAL_SESSION_TOKEN))
+        require(sessionId.matches(CREDENTIAL_SESSION_ID))
+        require(humanIdentityId.matches(CREDENTIAL_HUMAN_ID))
+        require(deviceId.matches(CREDENTIAL_DEVICE_ID))
         require(tenantId.isNotBlank() && tenantId.length <= 64)
     }
 
-    fun <T> withToken(block: (String) -> T): T = block(credential)
+    suspend fun <T> withToken(block: suspend (String) -> T): T = block(credential)
 
     override fun toString() =
         "ClientSessionCredential(sessionId=$sessionId, expiresAt=$expiresAt, " +
