@@ -6,7 +6,13 @@ import io.github.escossio.andy.core.humanidentity.HumanIdentityReference
 import io.github.escossio.andy.core.humanidentity.HumanIdentityState
 import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
+import io.github.escossio.andy.sdk.clientapi.ClientSessionChallengeResult
+import io.github.escossio.andy.sdk.clientapi.ClientSessionClient
+import io.github.escossio.andy.sdk.clientapi.ClientSessionCompleteResult
+import io.github.escossio.andy.sdk.clientapi.ClientSessionCredential
+import io.github.escossio.andy.sdk.clientapi.ClientSessionErrorCode
 import io.github.escossio.andy.sdk.clientapi.ContinuationResult
 import io.github.escossio.andy.sdk.clientapi.DeviceBootstrapChallengeResult
 import io.github.escossio.andy.sdk.clientapi.DeviceBootstrapClient
@@ -32,6 +38,7 @@ class OnboardingCoordinator(
     private val client: HumanAuthClient,
     private val provider: GoogleCredentialAcquirer,
     private val bootstrapClient: DeviceBootstrapClient,
+    private val sessionClient: ClientSessionClient,
     private val devicePublicKeySpki: () -> String?,
     private val signDeviceChallenge: (String) -> String?,
     private val engine: HumanIdentityEngine = HumanIdentityEngine(ready),
@@ -43,8 +50,14 @@ class OnboardingCoordinator(
         MutableStateFlow<DeviceBootstrapState>(DeviceBootstrapState.Idle)
     val bootstrapState: StateFlow<DeviceBootstrapState> = bootstrapMutable.asStateFlow()
 
+    private val sessionMutable =
+        MutableStateFlow<ClientSessionState>(ClientSessionState.Idle)
+    val sessionState: StateFlow<ClientSessionState> = sessionMutable.asStateFlow()
+
     private var continuationGrant: HumanAuthContinuationGrant? = null
     private var validatedIdentity: HumanIdentityReference? = null
+    private var clientSession: ClientSessionCredential? = null
+    private val deviceReady = ready
 
     fun takeContinuationGrant(): HumanAuthContinuationGrant? {
         val grant = continuationGrant
@@ -55,7 +68,9 @@ class OnboardingCoordinator(
     suspend fun continueWithGoogle() {
         continuationGrant = null
         validatedIdentity = null
+        clientSession = null
         bootstrapMutable.value = DeviceBootstrapState.Idle
+        sessionMutable.value = ClientSessionState.Idle
 
         if (engine.state == HumanIdentityState.DeviceIdentityUnavailable) {
             mutable.value = engine.begin()
@@ -108,6 +123,20 @@ class OnboardingCoordinator(
         }
     }
 
+    suspend fun continueWithExistingDevice() {
+        clientSession = null
+        sessionMutable.value = ClientSessionState.Idle
+        continueClientSession()
+    }
+
+    suspend fun retryClientSession() {
+        if (clientSession != null) {
+            loadAuthenticatedBootstrap()
+        } else {
+            continueClientSession()
+        }
+    }
+
     suspend fun retryDeviceBootstrap() {
         if (
             continuationGrant == null ||
@@ -125,7 +154,9 @@ class OnboardingCoordinator(
     fun restartAuthentication() {
         continuationGrant = null
         validatedIdentity = null
+        clientSession = null
         bootstrapMutable.value = DeviceBootstrapState.Idle
+        sessionMutable.value = ClientSessionState.Idle
         mutable.value = engine.retry()
     }
 
@@ -180,11 +211,108 @@ class OnboardingCoordinator(
                 } else {
                     bootstrapMutable.value =
                         DeviceBootstrapState.Established(result.established)
+                    continueClientSession()
                 }
             }
             is DeviceBootstrapCompleteResult.Failure ->
                 failBootstrap(result.error.failure())
         }
+    }
+
+    private suspend fun continueClientSession() {
+        if (!deviceReady) {
+            return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+        }
+
+        sessionMutable.value = ClientSessionState.Establishing
+        val publicKey = try {
+            devicePublicKeySpki()
+        } catch (_: Exception) {
+            null
+        } ?: return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+
+        val requestedTenantId =
+            (bootstrapMutable.value as? DeviceBootstrapState.Established)
+                ?.authority
+                ?.initialTenantId
+
+        val challenge = when (
+            val result = sessionClient.start(
+                publicKeySpkiB64Url = publicKey,
+                requestedTenantId = requestedTenantId,
+            )
+        ) {
+            is ClientSessionChallengeResult.Success -> result.challenge
+            is ClientSessionChallengeResult.Failure ->
+                return failSession(result.error.failure())
+        }
+
+        val signature = try {
+            signDeviceChallenge(challenge.challengeB64Url)
+        } catch (_: Exception) {
+            null
+        } ?: return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+
+        val issued = when (
+            val result = sessionClient.complete(
+                challenge.challengeId,
+                signature,
+            )
+        ) {
+            is ClientSessionCompleteResult.Success -> result.session
+            is ClientSessionCompleteResult.Failure ->
+                return failSession(result.error.failure())
+        }
+
+        val established =
+            (bootstrapMutable.value as? DeviceBootstrapState.Established)?.authority
+        if (
+            established != null &&
+            (
+                established.humanIdentityId != issued.humanIdentityId ||
+                    established.device.deviceId != issued.deviceId ||
+                    (
+                        established.initialTenantId != null &&
+                            established.initialTenantId != issued.tenantId
+                    )
+            )
+        ) {
+            clientSession = null
+            return failSession(ClientSessionFailure.SESSION_BOOTSTRAP_MISMATCH)
+        }
+
+        clientSession = issued
+        loadAuthenticatedBootstrap()
+    }
+
+    private suspend fun loadAuthenticatedBootstrap() {
+        val session = clientSession
+            ?: return failSession(ClientSessionFailure.CLIENT_SESSION_UNAUTHENTICATED)
+
+        sessionMutable.value = ClientSessionState.LoadingBootstrap
+        when (val result = sessionClient.bootstrap(session)) {
+            is AuthenticatedBootstrapResult.Success -> {
+                val bootstrap = result.bootstrap
+                if (
+                    bootstrap.humanIdentityId != session.humanIdentityId ||
+                    bootstrap.activeTenantId != session.tenantId ||
+                    bootstrap.device.deviceId != session.deviceId ||
+                    bootstrap.sessionExpiresAt != session.expiresAt ||
+                    bootstrap.memberships.none { it.tenantId == bootstrap.activeTenantId }
+                ) {
+                    clientSession = null
+                    failSession(ClientSessionFailure.SESSION_BOOTSTRAP_MISMATCH)
+                } else {
+                    sessionMutable.value = ClientSessionState.Connected(bootstrap)
+                }
+            }
+            is AuthenticatedBootstrapResult.Failure ->
+                failSession(result.error.failure())
+        }
+    }
+
+    private fun failSession(reason: ClientSessionFailure) {
+        sessionMutable.value = ClientSessionState.Failure(reason)
     }
 
     private fun failBootstrap(reason: DeviceBootstrapFailure) {
@@ -230,5 +358,32 @@ class OnboardingCoordinator(
             DeviceBootstrapFailure.DEVICE_BOOTSTRAP_UNAVAILABLE
         DeviceBootstrapErrorCode.UNEXPECTED_RESPONSE ->
             DeviceBootstrapFailure.UNEXPECTED_RESPONSE
+    }
+
+    private fun ClientSessionErrorCode.failure() = when (this) {
+        ClientSessionErrorCode.NETWORK_FAILURE ->
+            ClientSessionFailure.NETWORK_FAILURE
+        ClientSessionErrorCode.CLIENT_SESSION_DEVICE_REJECTED ->
+            ClientSessionFailure.CLIENT_SESSION_DEVICE_REJECTED
+        ClientSessionErrorCode.CLIENT_SESSION_CHALLENGE_NOT_FOUND ->
+            ClientSessionFailure.CLIENT_SESSION_CHALLENGE_NOT_FOUND
+        ClientSessionErrorCode.CLIENT_SESSION_CHALLENGE_EXPIRED ->
+            ClientSessionFailure.CLIENT_SESSION_CHALLENGE_EXPIRED
+        ClientSessionErrorCode.CLIENT_SESSION_CHALLENGE_CONSUMED ->
+            ClientSessionFailure.CLIENT_SESSION_CHALLENGE_CONSUMED
+        ClientSessionErrorCode.CLIENT_SESSION_SIGNATURE_INVALID ->
+            ClientSessionFailure.CLIENT_SESSION_SIGNATURE_INVALID
+        ClientSessionErrorCode.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED ->
+            ClientSessionFailure.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED
+        ClientSessionErrorCode.CLIENT_SESSION_TENANT_FORBIDDEN ->
+            ClientSessionFailure.CLIENT_SESSION_TENANT_FORBIDDEN
+        ClientSessionErrorCode.CLIENT_SESSION_UNAUTHENTICATED ->
+            ClientSessionFailure.CLIENT_SESSION_UNAUTHENTICATED
+        ClientSessionErrorCode.CLIENT_SESSION_AUTHORITY_REJECTED ->
+            ClientSessionFailure.CLIENT_SESSION_AUTHORITY_REJECTED
+        ClientSessionErrorCode.CLIENT_SESSION_UNAVAILABLE ->
+            ClientSessionFailure.CLIENT_SESSION_UNAVAILABLE
+        ClientSessionErrorCode.UNEXPECTED_RESPONSE ->
+            ClientSessionFailure.UNEXPECTED_RESPONSE
     }
 }
