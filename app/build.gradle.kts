@@ -36,6 +36,7 @@ dependencies {
     implementation(project(":core:device-identity"))
     implementation(project(":data:device-identity"))
     implementation(project(":data:client-session"))
+    implementation(project(":data:location"))
     implementation(project(":features:onboarding"))
     implementation(project(":sdk:client-api"))
     implementation(project(":integrations:google-identity"))

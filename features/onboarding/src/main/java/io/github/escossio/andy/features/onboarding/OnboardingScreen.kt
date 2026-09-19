@@ -15,18 +15,22 @@ fun OnboardingScreen(
     state: HumanIdentityState,
     bootstrapState: DeviceBootstrapState,
     sessionState: ClientSessionState,
+    locationState: ClientLocationState,
     onContinue: () -> Unit,
     onContinueSession: () -> Unit,
     onRetryHuman: () -> Unit,
     onRetryBootstrap: () -> Unit,
     onRetrySession: () -> Unit,
+    onShareLocation: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(24.dp)) {
         if (sessionState !is ClientSessionState.Idle) {
             SessionContent(
                 sessionState = sessionState,
+                locationState = locationState,
                 onRetrySession = onRetrySession,
                 onRestartHuman = onRetryHuman,
+                onShareLocation = onShareLocation,
             )
             return@Column
         }
@@ -92,8 +96,10 @@ private fun BootstrapContent(
 @Composable
 private fun SessionContent(
     sessionState: ClientSessionState,
+    locationState: ClientLocationState,
     onRetrySession: () -> Unit,
     onRestartHuman: () -> Unit,
+    onShareLocation: () -> Unit,
 ) {
     when (sessionState) {
         ClientSessionState.Idle -> Unit
@@ -122,6 +128,30 @@ private fun SessionContent(
                 "Session expires: ${bootstrap.sessionExpiresAt}",
                 Modifier.padding(top = 8.dp),
             )
+            Action("Share current location", onShareLocation)
+            when (locationState) {
+                ClientLocationState.Idle -> Unit
+                ClientLocationState.Acquiring ->
+                    BasicText("Acquiring current location…", Modifier.padding(top = 8.dp))
+                ClientLocationState.Sharing ->
+                    BasicText("Sharing current location…", Modifier.padding(top = 8.dp))
+                is ClientLocationState.Shared -> {
+                    BasicText("Location shared.", Modifier.padding(top = 8.dp))
+                    BasicText(
+                        "Accuracy: ${locationState.accuracyM.toInt()} m",
+                        Modifier.padding(top = 8.dp),
+                    )
+                    BasicText(
+                        "Captured: ${locationState.capturedAt}",
+                        Modifier.padding(top = 8.dp),
+                    )
+                }
+                is ClientLocationState.Failure ->
+                    BasicText(
+                        "Location sharing failed: ${locationState.reason.name}",
+                        Modifier.padding(top = 8.dp),
+                    )
+            }
         }
         is ClientSessionState.Failure -> {
             BasicText("Secure connection failed: ${sessionState.reason.name}")

@@ -8,6 +8,10 @@ import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcqui
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
+import io.github.escossio.andy.sdk.clientapi.ClientLocationClient
+import io.github.escossio.andy.sdk.clientapi.ClientLocationErrorCode
+import io.github.escossio.andy.sdk.clientapi.ClientLocationObservation
+import io.github.escossio.andy.sdk.clientapi.ClientLocationResult
 import io.github.escossio.andy.sdk.clientapi.ClientSessionChallengeResult
 import io.github.escossio.andy.sdk.clientapi.ClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.ClientSessionCompleteResult
@@ -44,6 +48,7 @@ class OnboardingCoordinator(
     private val provider: GoogleCredentialAcquirer,
     private val bootstrapClient: DeviceBootstrapClient,
     private val sessionClient: ClientSessionClient,
+    private val locationClient: ClientLocationClient? = null,
     private val devicePublicKeySpki: () -> String?,
     private val signDeviceChallenge: (String) -> String?,
     private val sessionStore: ClientSessionStore = NoopClientSessionStore,
@@ -60,6 +65,10 @@ class OnboardingCoordinator(
     private val sessionMutable =
         MutableStateFlow<ClientSessionState>(ClientSessionState.Idle)
     val sessionState: StateFlow<ClientSessionState> = sessionMutable.asStateFlow()
+
+    private val locationMutable =
+        MutableStateFlow<ClientLocationState>(ClientLocationState.Idle)
+    val locationState: StateFlow<ClientLocationState> = locationMutable.asStateFlow()
 
     private var continuationGrant: HumanAuthContinuationGrant? = null
     private var validatedIdentity: HumanIdentityReference? = null
@@ -150,6 +159,69 @@ class OnboardingCoordinator(
             if (sessionMutable.value is ClientSessionState.Connected) return@withLock
             restoreOrEstablish(automatic = false)
         }
+    }
+
+    fun beginLocationAcquisition() {
+        if (sessionMutable.value is ClientSessionState.Connected) {
+            locationMutable.value = ClientLocationState.Acquiring
+        } else {
+            locationMutable.value = ClientLocationState.Failure(
+                ClientLocationFailure.CLIENT_LOCATION_UNAUTHENTICATED,
+            )
+        }
+    }
+
+    fun failLocation(reason: ClientLocationFailure) {
+        locationMutable.value = ClientLocationState.Failure(reason)
+    }
+
+    suspend fun shareCurrentLocation(observation: ClientLocationObservation) {
+        val session = clientSession
+        val client = locationClient
+        if (
+            session == null ||
+            client == null ||
+            sessionMutable.value !is ClientSessionState.Connected
+        ) {
+            locationMutable.value = ClientLocationState.Failure(
+                ClientLocationFailure.CLIENT_LOCATION_UNAUTHENTICATED,
+            )
+            return
+        }
+
+        locationMutable.value = ClientLocationState.Sharing
+        val written = when (val result = client.putCurrent(session, observation)) {
+            is ClientLocationResult.Success -> result.snapshot
+            is ClientLocationResult.Failure -> {
+                locationMutable.value = ClientLocationState.Failure(result.error.locationFailure())
+                return
+            }
+        }
+
+        val readback = when (val result = client.getCurrent(session)) {
+            is ClientLocationResult.Success -> result.snapshot
+            is ClientLocationResult.Failure -> {
+                locationMutable.value = ClientLocationState.Failure(result.error.locationFailure())
+                return
+            }
+        }
+
+        if (
+            written.locationSnapshotId != readback.locationSnapshotId ||
+            readback.humanIdentityId != session.humanIdentityId ||
+            readback.deviceId != session.deviceId ||
+            readback.tenantId != session.tenantId
+        ) {
+            locationMutable.value = ClientLocationState.Failure(
+                ClientLocationFailure.AUTHORITY_MISMATCH,
+            )
+            return
+        }
+
+        locationMutable.value = ClientLocationState.Shared(
+            accuracyM = readback.accuracyM,
+            capturedAt = readback.capturedAt,
+        )
     }
 
     suspend fun retryClientSession() {

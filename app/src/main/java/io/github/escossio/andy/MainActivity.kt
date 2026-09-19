@@ -1,8 +1,11 @@
 package io.github.escossio.andy
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -12,6 +15,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider
+import io.github.escossio.andy.features.onboarding.ClientLocationFailure
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.features.onboarding.OnboardingScreen
 import kotlinx.coroutines.launch
@@ -30,7 +34,7 @@ class MainActivity : ComponentActivity() {
         sessionViewModel.attachActivity(this)
 
         setContent {
-            AndyBootstrap(sessionViewModel.coordinator)
+            AndyBootstrap(sessionViewModel)
         }
     }
 
@@ -42,12 +46,24 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AndyBootstrap(
-    coordinator: OnboardingCoordinator,
+    viewModel: AndySessionViewModel,
 ) {
+    val coordinator: OnboardingCoordinator = viewModel.coordinator
     val scope = rememberCoroutineScope()
     val state by coordinator.state.collectAsState()
     val bootstrapState by coordinator.bootstrapState.collectAsState()
     val sessionState by coordinator.sessionState.collectAsState()
+    val locationState by coordinator.locationState.collectAsState()
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.values.any { it }) {
+            scope.launch { viewModel.shareCurrentLocation() }
+        } else {
+            coordinator.failLocation(ClientLocationFailure.PERMISSION_DENIED)
+        }
+    }
 
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -57,6 +73,7 @@ private fun AndyBootstrap(
             state = state,
             bootstrapState = bootstrapState,
             sessionState = sessionState,
+            locationState = locationState,
             onContinue = {
                 scope.launch { coordinator.continueWithGoogle() }
             },
@@ -71,6 +88,14 @@ private fun AndyBootstrap(
             },
             onRetrySession = {
                 scope.launch { coordinator.retryClientSession() }
+            },
+            onShareLocation = {
+                locationPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ),
+                )
             },
         )
     }

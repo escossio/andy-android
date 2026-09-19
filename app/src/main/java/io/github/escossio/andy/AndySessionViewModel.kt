@@ -10,11 +10,16 @@ import io.github.escossio.andy.core.deviceidentity.DeviceBootstrapSignatureResul
 import io.github.escossio.andy.core.deviceidentity.DeviceIdentityResult
 import io.github.escossio.andy.data.clientsession.AndroidKeystoreClientSessionStore
 import io.github.escossio.andy.data.deviceidentity.AndroidDeviceIdentityFactory
+import io.github.escossio.andy.data.location.AndroidForegroundLocationProvider
+import io.github.escossio.andy.data.location.ForegroundLocationResult
+import io.github.escossio.andy.features.onboarding.ClientLocationFailure
 import io.github.escossio.andy.features.onboarding.OnboardingConfiguration
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.integrations.googleidentity.AndroidGoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
+import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientLocationClient
+import io.github.escossio.andy.sdk.clientapi.ClientLocationObservation
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterDeviceBootstrapClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
@@ -32,6 +37,7 @@ class AndySessionViewModel private constructor(
     private val credentialBridge =
         ActivityGoogleCredentialAcquirer(BuildConfig.GOOGLE_WEB_CLIENT_ID)
     private val bootstrapIdentity = AndroidDeviceIdentityFactory.createBootstrapIdentity()
+    private val locationProvider = AndroidForegroundLocationProvider(applicationContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val coordinator = OnboardingCoordinator(
@@ -47,6 +53,9 @@ class AndySessionViewModel private constructor(
             BuildConfig.ATTENTION_ROUTER_BASE_URL,
         ),
         sessionClient = AttentionRouterClientSessionClient(
+            BuildConfig.ATTENTION_ROUTER_BASE_URL,
+        ),
+        locationClient = AttentionRouterClientLocationClient(
             BuildConfig.ATTENTION_ROUTER_BASE_URL,
         ),
         devicePublicKeySpki = {
@@ -69,6 +78,30 @@ class AndySessionViewModel private constructor(
     init {
         scope.launch {
             coordinator.restoreClientSessionOnStartup()
+        }
+    }
+
+    suspend fun shareCurrentLocation() {
+        coordinator.beginLocationAcquisition()
+        when (val result = locationProvider.current()) {
+            is ForegroundLocationResult.Success -> {
+                val snapshot = result.snapshot
+                coordinator.shareCurrentLocation(
+                    ClientLocationObservation(
+                        latitude = snapshot.latitude,
+                        longitude = snapshot.longitude,
+                        accuracyM = snapshot.accuracyM,
+                        capturedAt = snapshot.capturedAt,
+                        precision = snapshot.precision.name,
+                    ),
+                )
+            }
+            ForegroundLocationResult.PermissionMissing ->
+                coordinator.failLocation(ClientLocationFailure.PERMISSION_DENIED)
+            ForegroundLocationResult.Unavailable ->
+                coordinator.failLocation(ClientLocationFailure.LOCATION_UNAVAILABLE)
+            ForegroundLocationResult.Timeout ->
+                coordinator.failLocation(ClientLocationFailure.LOCATION_TIMEOUT)
         }
     }
 
