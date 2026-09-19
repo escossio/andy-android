@@ -581,6 +581,19 @@ class OnboardingCoordinator(
             ClientSessionFailure.UNEXPECTED_RESPONSE
     }
 
+    private fun ClientLocationErrorCode.locationFailure() = when (this) {
+        ClientLocationErrorCode.NETWORK_FAILURE -> ClientLocationFailure.NETWORK_FAILURE
+        ClientLocationErrorCode.CLIENT_LOCATION_DISABLED -> ClientLocationFailure.CLIENT_LOCATION_DISABLED
+        ClientLocationErrorCode.CLIENT_LOCATION_INVALID -> ClientLocationFailure.CLIENT_LOCATION_INVALID
+        ClientLocationErrorCode.CLIENT_LOCATION_STALE -> ClientLocationFailure.CLIENT_LOCATION_STALE
+        ClientLocationErrorCode.CLIENT_LOCATION_FUTURE -> ClientLocationFailure.CLIENT_LOCATION_FUTURE
+        ClientLocationErrorCode.CLIENT_LOCATION_UNAUTHENTICATED -> ClientLocationFailure.CLIENT_LOCATION_UNAUTHENTICATED
+        ClientLocationErrorCode.CLIENT_LOCATION_AUTHORITY_REJECTED -> ClientLocationFailure.CLIENT_LOCATION_AUTHORITY_REJECTED
+        ClientLocationErrorCode.CLIENT_LOCATION_NOT_FOUND -> ClientLocationFailure.CLIENT_LOCATION_NOT_FOUND
+        ClientLocationErrorCode.CLIENT_LOCATION_UNAVAILABLE -> ClientLocationFailure.CLIENT_LOCATION_UNAVAILABLE
+        ClientLocationErrorCode.UNEXPECTED_RESPONSE -> ClientLocationFailure.UNEXPECTED_RESPONSE
+    }
+
     private fun ClientSessionErrorCode.invalidatesStoredCredential() = when (this) {
         ClientSessionErrorCode.CLIENT_SESSION_DEVICE_REJECTED,
         ClientSessionErrorCode.CLIENT_SESSION_TENANT_FORBIDDEN,
