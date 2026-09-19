@@ -28,3 +28,32 @@ enum class ClientSessionFailure {
     SESSION_BOOTSTRAP_MISMATCH,
     UNEXPECTED_RESPONSE,
 }
+
+
+sealed interface ClientLocationState {
+    data object Idle : ClientLocationState
+    data object Acquiring : ClientLocationState
+    data object Sharing : ClientLocationState
+    data class Shared(
+        val accuracyM: Double,
+        val capturedAt: java.time.Instant,
+    ) : ClientLocationState
+    data class Failure(val reason: ClientLocationFailure) : ClientLocationState
+}
+
+enum class ClientLocationFailure {
+    PERMISSION_DENIED,
+    LOCATION_UNAVAILABLE,
+    LOCATION_TIMEOUT,
+    NETWORK_FAILURE,
+    CLIENT_LOCATION_DISABLED,
+    CLIENT_LOCATION_INVALID,
+    CLIENT_LOCATION_STALE,
+    CLIENT_LOCATION_FUTURE,
+    CLIENT_LOCATION_UNAUTHENTICATED,
+    CLIENT_LOCATION_AUTHORITY_REJECTED,
+    CLIENT_LOCATION_NOT_FOUND,
+    CLIENT_LOCATION_UNAVAILABLE,
+    AUTHORITY_MISMATCH,
+    UNEXPECTED_RESPONSE,
+}
