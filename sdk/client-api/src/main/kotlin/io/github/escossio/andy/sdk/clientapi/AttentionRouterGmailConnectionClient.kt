@@ -207,7 +207,8 @@ class AttentionRouterGmailConnectionClient(
             GmailConnectionStatus.CONNECTED -> {
                 if (
                     installationId == null ||
-                    GMAIL_METADATA_SCOPE !in scopes
+                    scopes.size != 1 ||
+                    scopes.single() !in GMAIL_SUPPORTED_SCOPE_PROFILES
                 ) {
                     return unexpected()
                 }
