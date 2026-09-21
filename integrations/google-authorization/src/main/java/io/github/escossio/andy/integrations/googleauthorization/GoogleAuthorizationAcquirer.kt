@@ -21,7 +21,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class GoogleServerAuthorizationCode internal constructor(
+class GoogleServerAuthorizationCode(
     code: String,
 ) {
     private val credential = code
