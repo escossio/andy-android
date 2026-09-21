@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -54,6 +55,13 @@ private fun AndyBootstrap(
     val bootstrapState by coordinator.bootstrapState.collectAsState()
     val sessionState by coordinator.sessionState.collectAsState()
     val locationState by coordinator.locationState.collectAsState()
+    val gmailState by coordinator.gmailState.collectAsState()
+
+    LaunchedEffect(sessionState) {
+        if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
+            coordinator.refreshGmailConnection()
+        }
+    }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -74,6 +82,7 @@ private fun AndyBootstrap(
             bootstrapState = bootstrapState,
             sessionState = sessionState,
             locationState = locationState,
+            gmailState = gmailState,
             onContinue = {
                 scope.launch { coordinator.continueWithGoogle() }
             },
@@ -96,6 +105,12 @@ private fun AndyBootstrap(
                         Manifest.permission.ACCESS_COARSE_LOCATION,
                     ),
                 )
+            },
+            onConnectGmail = {
+                scope.launch { coordinator.connectGmail() }
+            },
+            onDisconnectGmail = {
+                scope.launch { coordinator.disconnectGmail() }
             },
         )
     }
