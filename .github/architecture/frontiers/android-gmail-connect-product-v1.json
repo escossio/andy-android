@@ -16,7 +16,8 @@
     "features/onboarding/build.gradle.kts",
     "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ClientSessionState.kt",
     "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
-    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt"
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt"
   ],
   "required_artifacts": [
     "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterGmailConnectionClient.kt",
