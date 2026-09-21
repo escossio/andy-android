@@ -4,6 +4,9 @@ import io.github.escossio.andy.core.humanidentity.HumanIdentityReference
 import io.github.escossio.andy.core.humanidentity.HumanIdentityState
 import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
+import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
+import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
+import io.github.escossio.andy.integrations.googleauthorization.GoogleServerAuthorizationCode
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
@@ -31,6 +34,12 @@ import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationGrant
 import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationPurpose
 import io.github.escossio.andy.sdk.clientapi.HumanAuthErrorCode
 import io.github.escossio.andy.sdk.clientapi.HumanIdentityContinuation
+import io.github.escossio.andy.sdk.clientapi.GMAIL_METADATA_SCOPE
+import io.github.escossio.andy.sdk.clientapi.GmailConnection
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionClient
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionErrorCode
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionResult
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionStatus
 import io.github.escossio.andy.sdk.clientapi.VerifyResult
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -376,6 +385,104 @@ class OnboardingCoordinatorTest {
         assertEquals(0, session.completeCalls)
     }
 
+    @Test
+    fun gmailConnectUsesOneTimeServerCodeAfterClientSession() = runBlocking {
+        val gmail = FakeGmailClient()
+        val authorization = FakeGmailAuthorization()
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            gmailClient = gmail,
+            gmailAuthorization = authorization,
+        )
+
+        coordinator.continueWithExistingDevice()
+        coordinator.connectGmail()
+
+        assertTrue(coordinator.gmailState.value is GmailConnectionState.Connected)
+        assertEquals(listOf(false), authorization.forceConsentCalls)
+        assertEquals(1, gmail.connectCodes.size)
+        assertTrue(gmail.connectCodes.single().startsWith("code-"))
+    }
+
+    @Test
+    fun gmailMissingRefreshTokenRetriesOnceWithExplicitConsent() = runBlocking {
+        val gmail = FakeGmailClient(
+            connectResults = ArrayDeque(
+                listOf(
+                    GmailConnectionResult.Failure(
+                        GmailConnectionErrorCode.GMAIL_REFRESH_TOKEN_REQUIRED,
+                    ),
+                    connectedGmailResult(),
+                ),
+            ),
+        )
+        val authorization = FakeGmailAuthorization()
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            gmailClient = gmail,
+            gmailAuthorization = authorization,
+        )
+
+        coordinator.continueWithExistingDevice()
+        coordinator.connectGmail()
+
+        assertEquals(listOf(false, true), authorization.forceConsentCalls)
+        assertEquals(2, gmail.connectCodes.size)
+        assertTrue(coordinator.gmailState.value is GmailConnectionState.Connected)
+    }
+
+    @Test
+    fun gmailCancelledAuthorizationNeverCallsBackendConnect() = runBlocking {
+        val gmail = FakeGmailClient()
+        val authorization = FakeGmailAuthorization(
+            results = ArrayDeque(
+                listOf(GoogleAuthorizationResult.Cancelled),
+            ),
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            gmailClient = gmail,
+            gmailAuthorization = authorization,
+        )
+
+        coordinator.continueWithExistingDevice()
+        coordinator.connectGmail()
+
+        assertEquals(emptyList<String>(), gmail.connectCodes)
+        assertEquals(
+            GmailConnectionState.Failure(
+                GmailConnectionFailure.PROVIDER_CANCELLED,
+            ),
+            coordinator.gmailState.value,
+        )
+    }
+
+    @Test
+    fun gmailDisconnectUsesBackendOnly() = runBlocking {
+        val gmail = FakeGmailClient()
+        val authorization = FakeGmailAuthorization()
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            gmailClient = gmail,
+            gmailAuthorization = authorization,
+        )
+
+        coordinator.continueWithExistingDevice()
+        coordinator.disconnectGmail()
+
+        assertEquals(1, gmail.disconnectCalls)
+        assertTrue(authorization.forceConsentCalls.isEmpty())
+        assertSame(GmailConnectionState.Disconnected, coordinator.gmailState.value)
+    }
+
     private fun coordinator(
         ready: Boolean,
         client: HumanAuthClient,
@@ -383,6 +490,8 @@ class OnboardingCoordinatorTest {
         sessionClient: ClientSessionClient = FakeSessionClient(),
         store: ClientSessionStore = FakeSessionStore(),
         now: () -> Instant = { Instant.parse("2029-01-01T00:00:00Z") },
+        gmailClient: GmailConnectionClient? = null,
+        gmailAuthorization: GoogleAuthorizationAcquirer? = null,
     ) = OnboardingCoordinator(
         ready = ready,
         config = OnboardingConfiguration(
@@ -397,11 +506,75 @@ class OnboardingCoordinatorTest {
         },
         bootstrapClient = bootstrapClient,
         sessionClient = sessionClient,
+        gmailClient = gmailClient,
+        gmailAuthorization = gmailAuthorization,
         devicePublicKeySpki = { "A".repeat(120) },
         signDeviceChallenge = { "c".repeat(96) },
         sessionStore = store,
         now = now,
     )
+
+    private class FakeGmailAuthorization(
+        private val results: ArrayDeque<GoogleAuthorizationResult> = ArrayDeque(
+            listOf(
+                GoogleAuthorizationResult.Authorized(
+                    GoogleServerAuthorizationCode("code-" + "a".repeat(16)),
+                ),
+                GoogleAuthorizationResult.Authorized(
+                    GoogleServerAuthorizationCode("code-" + "b".repeat(16)),
+                ),
+            ),
+        ),
+    ) : GoogleAuthorizationAcquirer {
+        val forceConsentCalls = mutableListOf<Boolean>()
+
+        override suspend fun acquire(
+            requestedScopes: Set<String>,
+            forceConsent: Boolean,
+        ): GoogleAuthorizationResult {
+            assertEquals(setOf(GMAIL_METADATA_SCOPE), requestedScopes)
+            forceConsentCalls += forceConsent
+            return results.removeFirst()
+        }
+    }
+
+    private class FakeGmailClient(
+        private val connectResults: ArrayDeque<GmailConnectionResult> = ArrayDeque(
+            listOf(connectedGmailResult()),
+        ),
+    ) : GmailConnectionClient {
+        val connectCodes = mutableListOf<String>()
+        var disconnectCalls = 0
+
+        override suspend fun getGmailConnection(
+            session: ClientSessionCredential,
+        ) = GmailConnectionResult.Success(
+            GmailConnection(
+                GmailConnectionStatus.DISCONNECTED,
+                emptySet(),
+            ),
+        )
+
+        override suspend fun connectGmail(
+            session: ClientSessionCredential,
+            authorizationCode: String,
+        ): GmailConnectionResult {
+            connectCodes += authorizationCode
+            return connectResults.removeFirst()
+        }
+
+        override suspend fun disconnectGmail(
+            session: ClientSessionCredential,
+        ): GmailConnectionResult {
+            disconnectCalls++
+            return GmailConnectionResult.Success(
+                GmailConnection(
+                    GmailConnectionStatus.DISCONNECTED,
+                    emptySet(),
+                ),
+            )
+        }
+    }
 
     private class FakeHumanClient(
         private val challenge: ChallengeResult = ChallengeResult.Success(
@@ -644,6 +817,13 @@ class OnboardingCoordinatorTest {
         const val GRANT_TOKEN = "hcg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val SESSION_TOKEN = "cst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val DEVICE_ID = "cdev_exampledevice12345678901"
+
+        fun connectedGmailResult() = GmailConnectionResult.Success(
+            GmailConnection(
+                GmailConnectionStatus.CONNECTED,
+                setOf(GMAIL_METADATA_SCOPE),
+            ),
+        )
 
         fun grant() = HumanAuthContinuationGrant(
             GRANT_TOKEN,
