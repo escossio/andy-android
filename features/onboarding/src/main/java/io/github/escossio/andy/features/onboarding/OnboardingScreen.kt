@@ -16,21 +16,27 @@ fun OnboardingScreen(
     bootstrapState: DeviceBootstrapState,
     sessionState: ClientSessionState,
     locationState: ClientLocationState,
+    gmailState: GmailConnectionState,
     onContinue: () -> Unit,
     onContinueSession: () -> Unit,
     onRetryHuman: () -> Unit,
     onRetryBootstrap: () -> Unit,
     onRetrySession: () -> Unit,
     onShareLocation: () -> Unit,
+    onConnectGmail: () -> Unit,
+    onDisconnectGmail: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(24.dp)) {
         if (sessionState !is ClientSessionState.Idle) {
             SessionContent(
                 sessionState = sessionState,
                 locationState = locationState,
+                gmailState = gmailState,
                 onRetrySession = onRetrySession,
                 onRestartHuman = onRetryHuman,
                 onShareLocation = onShareLocation,
+                onConnectGmail = onConnectGmail,
+                onDisconnectGmail = onDisconnectGmail,
             )
             return@Column
         }
@@ -97,9 +103,12 @@ private fun BootstrapContent(
 private fun SessionContent(
     sessionState: ClientSessionState,
     locationState: ClientLocationState,
+    gmailState: GmailConnectionState,
     onRetrySession: () -> Unit,
     onRestartHuman: () -> Unit,
     onShareLocation: () -> Unit,
+    onConnectGmail: () -> Unit,
+    onDisconnectGmail: () -> Unit,
 ) {
     when (sessionState) {
         ClientSessionState.Idle -> Unit
@@ -127,6 +136,11 @@ private fun SessionContent(
             BasicText(
                 "Session expires: ${bootstrap.sessionExpiresAt}",
                 Modifier.padding(top = 8.dp),
+            )
+            GmailContent(
+                state = gmailState,
+                onConnect = onConnectGmail,
+                onDisconnect = onDisconnectGmail,
             )
             Action("Share current location", onShareLocation)
             when (locationState) {
@@ -157,6 +171,39 @@ private fun SessionContent(
             BasicText("Secure connection failed: ${sessionState.reason.name}")
             Action("Retry secure connection", onRetrySession)
             Action("Start over with Google", onRestartHuman)
+        }
+    }
+}
+
+@Composable
+private fun GmailContent(
+    state: GmailConnectionState,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    BasicText("Gmail", Modifier.padding(top = 24.dp))
+    when (state) {
+        GmailConnectionState.Idle,
+        GmailConnectionState.Loading ->
+            BasicText("Checking Gmail connection…", Modifier.padding(top = 8.dp))
+        GmailConnectionState.Disconnected ->
+            Action("Connect Gmail", onConnect)
+        GmailConnectionState.Authorizing ->
+            BasicText("Waiting for Google authorization…", Modifier.padding(top = 8.dp))
+        GmailConnectionState.Connecting ->
+            BasicText("Connecting Gmail…", Modifier.padding(top = 8.dp))
+        GmailConnectionState.Disconnecting ->
+            BasicText("Disconnecting Gmail…", Modifier.padding(top = 8.dp))
+        is GmailConnectionState.Connected -> {
+            BasicText("Gmail connected.", Modifier.padding(top = 8.dp))
+            Action("Disconnect Gmail", onDisconnect)
+        }
+        is GmailConnectionState.Failure -> {
+            BasicText(
+                "Gmail connection failed: ${state.reason.name}",
+                Modifier.padding(top = 8.dp),
+            )
+            Action("Try Gmail again", onConnect)
         }
     }
 }
