@@ -84,6 +84,7 @@ class AndroidGoogleAuthorizationAcquirer(
         try {
             val builder = AuthorizationRequest.builder()
                 .setRequestedScopes(requestedScopes.sorted().map(::Scope))
+                .setOptOutIncludingGrantedScopes(true)
                 .requestOfflineAccess(serverClientId)
 
             if (forceConsent) {
