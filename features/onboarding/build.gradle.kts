@@ -11,6 +11,7 @@ dependencies {
     api(project(":core:human-identity"))
     implementation(project(":sdk:client-api"))
     implementation(project(":integrations:google-identity"))
+    implementation(project(":integrations:google-authorization"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.foundation)
     implementation(libs.kotlinx.coroutines.core)

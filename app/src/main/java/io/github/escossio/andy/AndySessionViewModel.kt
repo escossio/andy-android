@@ -3,6 +3,7 @@ package io.github.escossio.andy
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.activity.ComponentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import io.github.escossio.andy.core.deviceidentity.DeviceBootstrapPublicKeyResult
@@ -18,11 +19,15 @@ import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.integrations.googleidentity.AndroidGoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
+import io.github.escossio.andy.integrations.googleauthorization.AndroidGoogleAuthorizationAcquirer
+import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
+import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientLocationClient
 import io.github.escossio.andy.sdk.clientapi.ClientLocationObservation
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterDeviceBootstrapClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
+import io.github.escossio.andy.sdk.clientapi.AttentionRouterGmailConnectionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +41,8 @@ class AndySessionViewModel private constructor(
     private val applicationContext = context.applicationContext
     private val credentialBridge =
         ActivityGoogleCredentialAcquirer(BuildConfig.GOOGLE_WEB_CLIENT_ID)
+    private val authorizationBridge =
+        ActivityGoogleAuthorizationBridge(BuildConfig.GOOGLE_WEB_CLIENT_ID)
     private val bootstrapIdentity = AndroidDeviceIdentityFactory.createBootstrapIdentity()
     private val locationProvider = AndroidForegroundLocationProvider(applicationContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -58,6 +65,10 @@ class AndySessionViewModel private constructor(
         locationClient = AttentionRouterClientLocationClient(
             BuildConfig.ATTENTION_ROUTER_BASE_URL,
         ),
+        gmailClient = AttentionRouterGmailConnectionClient(
+            BuildConfig.ATTENTION_ROUTER_BASE_URL,
+        ),
+        gmailAuthorization = authorizationBridge,
         devicePublicKeySpki = {
             when (val result = bootstrapIdentity.publicKey()) {
                 is DeviceBootstrapPublicKeyResult.Ready ->
@@ -105,15 +116,18 @@ class AndySessionViewModel private constructor(
         }
     }
 
-    fun attachActivity(context: Context) {
-        credentialBridge.attach(context)
+    fun attachActivity(activity: ComponentActivity) {
+        credentialBridge.attach(activity)
+        authorizationBridge.attach(activity)
     }
 
-    fun detachActivity(context: Context) {
-        credentialBridge.detach(context)
+    fun detachActivity(activity: ComponentActivity) {
+        authorizationBridge.detach(activity)
+        credentialBridge.detach(activity)
     }
 
     override fun onCleared() {
+        authorizationBridge.close()
         scope.cancel()
         super.onCleared()
     }
@@ -169,5 +183,57 @@ private class ActivityGoogleCredentialAcquirer(
             context = context,
             serverClientId = serverClientId,
         ).acquire(nonce)
+    }
+}
+
+
+private class ActivityGoogleAuthorizationBridge(
+    private val serverClientId: String,
+) : GoogleAuthorizationAcquirer, AutoCloseable {
+    @Volatile
+    private var activityReference: WeakReference<ComponentActivity>? = null
+
+    @Volatile
+    private var delegate: AndroidGoogleAuthorizationAcquirer? = null
+
+    @Synchronized
+    fun attach(activity: ComponentActivity) {
+        if (
+            activityReference?.get() === activity &&
+            delegate != null
+        ) {
+            return
+        }
+        delegate?.close()
+        activityReference = WeakReference(activity)
+        delegate = AndroidGoogleAuthorizationAcquirer(
+            activity = activity,
+            serverClientId = serverClientId,
+        )
+    }
+
+    @Synchronized
+    fun detach(activity: ComponentActivity) {
+        if (activityReference?.get() === activity) {
+            delegate?.close()
+            delegate = null
+            activityReference = null
+        }
+    }
+
+    override suspend fun acquire(
+        requestedScopes: Set<String>,
+        forceConsent: Boolean,
+    ): GoogleAuthorizationResult {
+        val current = delegate
+            ?: return GoogleAuthorizationResult.Unavailable
+        return current.acquire(requestedScopes, forceConsent)
+    }
+
+    @Synchronized
+    override fun close() {
+        delegate?.close()
+        delegate = null
+        activityReference = null
     }
 }

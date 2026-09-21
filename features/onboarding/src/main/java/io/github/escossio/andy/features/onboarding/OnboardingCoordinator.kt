@@ -6,6 +6,8 @@ import io.github.escossio.andy.core.humanidentity.HumanIdentityReference
 import io.github.escossio.andy.core.humanidentity.HumanIdentityState
 import io.github.escossio.andy.integrations.googleidentity.GoogleCredentialAcquirer
 import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialResult
+import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
+import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
 import io.github.escossio.andy.sdk.clientapi.ClientLocationClient
@@ -28,6 +30,11 @@ import io.github.escossio.andy.sdk.clientapi.HumanAuthClient
 import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationGrant
 import io.github.escossio.andy.sdk.clientapi.HumanAuthErrorCode
 import io.github.escossio.andy.sdk.clientapi.NoopClientSessionStore
+import io.github.escossio.andy.sdk.clientapi.GMAIL_METADATA_SCOPE
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionClient
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionErrorCode
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionResult
+import io.github.escossio.andy.sdk.clientapi.GmailConnectionStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +56,8 @@ class OnboardingCoordinator(
     private val bootstrapClient: DeviceBootstrapClient,
     private val sessionClient: ClientSessionClient,
     private val locationClient: ClientLocationClient? = null,
+    private val gmailClient: GmailConnectionClient? = null,
+    private val gmailAuthorization: GoogleAuthorizationAcquirer? = null,
     private val devicePublicKeySpki: () -> String?,
     private val signDeviceChallenge: (String) -> String?,
     private val sessionStore: ClientSessionStore = NoopClientSessionStore,
@@ -70,11 +79,16 @@ class OnboardingCoordinator(
         MutableStateFlow<ClientLocationState>(ClientLocationState.Idle)
     val locationState: StateFlow<ClientLocationState> = locationMutable.asStateFlow()
 
+    private val gmailMutable =
+        MutableStateFlow<GmailConnectionState>(GmailConnectionState.Idle)
+    val gmailState: StateFlow<GmailConnectionState> = gmailMutable.asStateFlow()
+
     private var continuationGrant: HumanAuthContinuationGrant? = null
     private var validatedIdentity: HumanIdentityReference? = null
     private var clientSession: ClientSessionCredential? = null
     private val deviceReady = ready
     private val sessionMutex = Mutex()
+    private val gmailMutex = Mutex()
 
     fun takeContinuationGrant(): HumanAuthContinuationGrant? {
         val grant = continuationGrant
@@ -99,6 +113,7 @@ class OnboardingCoordinator(
             clientSession = null
             bootstrapMutable.value = DeviceBootstrapState.Idle
             sessionMutable.value = ClientSessionState.Idle
+            gmailMutable.value = GmailConnectionState.Idle
             true
         }
         if (!reset) return
@@ -173,6 +188,65 @@ class OnboardingCoordinator(
 
     fun failLocation(reason: ClientLocationFailure) {
         locationMutable.value = ClientLocationState.Failure(reason)
+    }
+
+    suspend fun refreshGmailConnection() {
+        gmailMutex.withLock {
+            refreshGmailConnectionLocked()
+        }
+    }
+
+    suspend fun connectGmail() {
+        gmailMutex.withLock {
+            val session = requireGmailSession() ?: return@withLock
+            val client = gmailClient
+                ?: return@withLock failGmail(
+                    GmailConnectionFailure.GMAIL_CONNECTION_UNAVAILABLE,
+                )
+            val authorization = gmailAuthorization
+                ?: return@withLock failGmail(
+                    GmailConnectionFailure.PROVIDER_UNAVAILABLE,
+                )
+
+            val first = authorizeGmail(
+                authorization = authorization,
+                forceConsent = false,
+            ) ?: return@withLock
+            gmailMutable.value = GmailConnectionState.Connecting
+
+            val firstResult = first.withCode { code ->
+                client.connectGmail(session, code)
+            }
+            if (
+                firstResult is GmailConnectionResult.Failure &&
+                firstResult.error == GmailConnectionErrorCode.GMAIL_REFRESH_TOKEN_REQUIRED
+            ) {
+                val retry = authorizeGmail(
+                    authorization = authorization,
+                    forceConsent = true,
+                ) ?: return@withLock
+                gmailMutable.value = GmailConnectionState.Connecting
+                applyGmailResult(
+                    retry.withCode { code ->
+                        client.connectGmail(session, code)
+                    },
+                )
+                return@withLock
+            }
+            applyGmailResult(firstResult)
+        }
+    }
+
+    suspend fun disconnectGmail() {
+        gmailMutex.withLock {
+            val session = requireGmailSession() ?: return@withLock
+            val client = gmailClient
+                ?: return@withLock failGmail(
+                    GmailConnectionFailure.GMAIL_CONNECTION_UNAVAILABLE,
+                )
+            gmailMutable.value = GmailConnectionState.Disconnecting
+            applyGmailResult(client.disconnectGmail(session))
+        }
     }
 
     suspend fun shareCurrentLocation(observation: ClientLocationObservation) {
@@ -272,6 +346,7 @@ class OnboardingCoordinator(
             if (!clearStoredSession()) return@withLock false
             clientSession = null
             sessionMutable.value = ClientSessionState.Idle
+            gmailMutable.value = GmailConnectionState.Idle
             true
         }
         if (!reset) return
@@ -497,6 +572,67 @@ class OnboardingCoordinator(
         }
     }
 
+    private suspend fun refreshGmailConnectionLocked() {
+        val session = requireGmailSession() ?: return
+        val client = gmailClient
+            ?: return failGmail(
+                GmailConnectionFailure.GMAIL_CONNECTION_UNAVAILABLE,
+            )
+        gmailMutable.value = GmailConnectionState.Loading
+        applyGmailResult(client.getGmailConnection(session))
+    }
+
+    private fun requireGmailSession(): ClientSessionCredential? {
+        val session = clientSession
+        if (
+            session == null ||
+            sessionMutable.value !is ClientSessionState.Connected
+        ) {
+            failGmail(
+                GmailConnectionFailure.CLIENT_SESSION_UNAUTHENTICATED,
+            )
+            return null
+        }
+        return session
+    }
+
+    private suspend fun authorizeGmail(
+        authorization: GoogleAuthorizationAcquirer,
+        forceConsent: Boolean,
+    ) = when (
+        val result = authorization.acquire(
+            requestedScopes = setOf(GMAIL_METADATA_SCOPE),
+            forceConsent = forceConsent,
+        )
+    ) {
+        GoogleAuthorizationResult.Cancelled -> {
+            failGmail(GmailConnectionFailure.PROVIDER_CANCELLED)
+            null
+        }
+        GoogleAuthorizationResult.Unavailable -> {
+            failGmail(GmailConnectionFailure.PROVIDER_UNAVAILABLE)
+            null
+        }
+        is GoogleAuthorizationResult.Authorized -> result.code
+    }
+
+    private fun applyGmailResult(result: GmailConnectionResult) {
+        gmailMutable.value = when (result) {
+            is GmailConnectionResult.Success -> when (result.connection.status) {
+                GmailConnectionStatus.CONNECTED ->
+                    GmailConnectionState.Connected(result.connection.grantedScopes)
+                GmailConnectionStatus.DISCONNECTED ->
+                    GmailConnectionState.Disconnected
+            }
+            is GmailConnectionResult.Failure ->
+                GmailConnectionState.Failure(result.error.gmailFailure())
+        }
+    }
+
+    private fun failGmail(reason: GmailConnectionFailure) {
+        gmailMutable.value = GmailConnectionState.Failure(reason)
+    }
+
     private suspend fun clearStoredSession(): Boolean = try {
         sessionStore.clear()
         true
@@ -592,6 +728,37 @@ class OnboardingCoordinator(
         ClientLocationErrorCode.CLIENT_LOCATION_NOT_FOUND -> ClientLocationFailure.CLIENT_LOCATION_NOT_FOUND
         ClientLocationErrorCode.CLIENT_LOCATION_UNAVAILABLE -> ClientLocationFailure.CLIENT_LOCATION_UNAVAILABLE
         ClientLocationErrorCode.UNEXPECTED_RESPONSE -> ClientLocationFailure.UNEXPECTED_RESPONSE
+    }
+
+    private fun GmailConnectionErrorCode.gmailFailure() = when (this) {
+        GmailConnectionErrorCode.NETWORK_FAILURE ->
+            GmailConnectionFailure.NETWORK_FAILURE
+        GmailConnectionErrorCode.GMAIL_CONNECTION_DISABLED ->
+            GmailConnectionFailure.GMAIL_CONNECTION_DISABLED
+        GmailConnectionErrorCode.GMAIL_AUTHORIZATION_REJECTED ->
+            GmailConnectionFailure.GMAIL_AUTHORIZATION_REJECTED
+        GmailConnectionErrorCode.GMAIL_REFRESH_TOKEN_REQUIRED ->
+            GmailConnectionFailure.GMAIL_REFRESH_TOKEN_REQUIRED
+        GmailConnectionErrorCode.GMAIL_PROVIDER_UNAVAILABLE ->
+            GmailConnectionFailure.GMAIL_PROVIDER_UNAVAILABLE
+        GmailConnectionErrorCode.GMAIL_CONNECTION_CONFLICT ->
+            GmailConnectionFailure.GMAIL_CONNECTION_CONFLICT
+        GmailConnectionErrorCode.GMAIL_CONNECTION_UNAVAILABLE ->
+            GmailConnectionFailure.GMAIL_CONNECTION_UNAVAILABLE
+        GmailConnectionErrorCode.CLIENT_SESSION_DEVICE_REJECTED ->
+            GmailConnectionFailure.CLIENT_SESSION_DEVICE_REJECTED
+        GmailConnectionErrorCode.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED ->
+            GmailConnectionFailure.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED
+        GmailConnectionErrorCode.CLIENT_SESSION_TENANT_FORBIDDEN ->
+            GmailConnectionFailure.CLIENT_SESSION_TENANT_FORBIDDEN
+        GmailConnectionErrorCode.CLIENT_SESSION_UNAUTHENTICATED ->
+            GmailConnectionFailure.CLIENT_SESSION_UNAUTHENTICATED
+        GmailConnectionErrorCode.CLIENT_SESSION_AUTHORITY_REJECTED ->
+            GmailConnectionFailure.CLIENT_SESSION_AUTHORITY_REJECTED
+        GmailConnectionErrorCode.CLIENT_SESSION_UNAVAILABLE ->
+            GmailConnectionFailure.CLIENT_SESSION_UNAVAILABLE
+        GmailConnectionErrorCode.UNEXPECTED_RESPONSE ->
+            GmailConnectionFailure.UNEXPECTED_RESPONSE
     }
 
     private fun ClientSessionErrorCode.invalidatesStoredCredential() = when (this) {
