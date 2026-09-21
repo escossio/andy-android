@@ -17,6 +17,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 const val GMAIL_METADATA_SCOPE = "https://www.googleapis.com/auth/gmail.metadata"
+const val GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+private val GMAIL_SUPPORTED_SCOPE_PROFILES =
+    setOf(GMAIL_METADATA_SCOPE, GMAIL_READONLY_SCOPE)
 
 enum class GmailConnectionStatus {
     CONNECTED,
