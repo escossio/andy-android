@@ -40,6 +40,7 @@ dependencies {
     implementation(project(":features:onboarding"))
     implementation(project(":sdk:client-api"))
     implementation(project(":integrations:google-identity"))
+    implementation(project(":integrations:google-authorization"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
