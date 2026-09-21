@@ -57,3 +57,38 @@ enum class ClientLocationFailure {
     AUTHORITY_MISMATCH,
     UNEXPECTED_RESPONSE,
 }
+
+
+sealed interface GmailConnectionState {
+    data object Idle : GmailConnectionState
+    data object Loading : GmailConnectionState
+    data object Disconnected : GmailConnectionState
+    data object Authorizing : GmailConnectionState
+    data object Connecting : GmailConnectionState
+    data object Disconnecting : GmailConnectionState
+    data class Connected(
+        val grantedScopes: Set<String>,
+    ) : GmailConnectionState
+    data class Failure(
+        val reason: GmailConnectionFailure,
+    ) : GmailConnectionState
+}
+
+enum class GmailConnectionFailure {
+    PROVIDER_CANCELLED,
+    PROVIDER_UNAVAILABLE,
+    NETWORK_FAILURE,
+    GMAIL_CONNECTION_DISABLED,
+    GMAIL_AUTHORIZATION_REJECTED,
+    GMAIL_REFRESH_TOKEN_REQUIRED,
+    GMAIL_PROVIDER_UNAVAILABLE,
+    GMAIL_CONNECTION_CONFLICT,
+    GMAIL_CONNECTION_UNAVAILABLE,
+    CLIENT_SESSION_DEVICE_REJECTED,
+    CLIENT_SESSION_ACTIVE_TENANT_REQUIRED,
+    CLIENT_SESSION_TENANT_FORBIDDEN,
+    CLIENT_SESSION_UNAUTHENTICATED,
+    CLIENT_SESSION_AUTHORITY_REJECTED,
+    CLIENT_SESSION_UNAVAILABLE,
+    UNEXPECTED_RESPONSE,
+}
