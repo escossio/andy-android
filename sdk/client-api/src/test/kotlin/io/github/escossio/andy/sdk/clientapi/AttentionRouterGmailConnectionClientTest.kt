@@ -130,11 +130,11 @@ class AttentionRouterGmailConnectionClientTest {
 
     private class FakeGmailTransport(
         private val getResponse: GmailConnectionTransportResponse =
-            response(500, "{}"),
+            GmailConnectionTransportResponse(500, "{}"),
         private val postResponse: GmailConnectionTransportResponse =
-            response(500, "{}"),
+            GmailConnectionTransportResponse(500, "{}"),
         private val deleteResponse: GmailConnectionTransportResponse =
-            response(500, "{}"),
+            GmailConnectionTransportResponse(500, "{}"),
     ) : GmailConnectionTransport {
         val calls = mutableListOf<List<String>>()
 
