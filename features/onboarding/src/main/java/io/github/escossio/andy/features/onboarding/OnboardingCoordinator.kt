@@ -30,7 +30,7 @@ import io.github.escossio.andy.sdk.clientapi.HumanAuthClient
 import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationGrant
 import io.github.escossio.andy.sdk.clientapi.HumanAuthErrorCode
 import io.github.escossio.andy.sdk.clientapi.NoopClientSessionStore
-import io.github.escossio.andy.sdk.clientapi.GMAIL_METADATA_SCOPE
+import io.github.escossio.andy.sdk.clientapi.GMAIL_READONLY_SCOPE
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionClient
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionErrorCode
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionResult
@@ -601,7 +601,7 @@ class OnboardingCoordinator(
         forceConsent: Boolean,
     ) = when (
         val result = authorization.acquire(
-            requestedScopes = setOf(GMAIL_METADATA_SCOPE),
+            requestedScopes = setOf(GMAIL_READONLY_SCOPE),
             forceConsent = forceConsent,
         )
     ) {

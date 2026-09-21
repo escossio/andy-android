@@ -35,6 +35,7 @@ import io.github.escossio.andy.sdk.clientapi.HumanAuthContinuationPurpose
 import io.github.escossio.andy.sdk.clientapi.HumanAuthErrorCode
 import io.github.escossio.andy.sdk.clientapi.HumanIdentityContinuation
 import io.github.escossio.andy.sdk.clientapi.GMAIL_METADATA_SCOPE
+import io.github.escossio.andy.sdk.clientapi.GMAIL_READONLY_SCOPE
 import io.github.escossio.andy.sdk.clientapi.GmailConnection
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionClient
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionErrorCode
@@ -532,7 +533,7 @@ class OnboardingCoordinatorTest {
             requestedScopes: Set<String>,
             forceConsent: Boolean,
         ): GoogleAuthorizationResult {
-            assertEquals(setOf(GMAIL_METADATA_SCOPE), requestedScopes)
+            assertEquals(setOf(GMAIL_READONLY_SCOPE), requestedScopes)
             forceConsentCalls += forceConsent
             return results.removeFirst()
         }

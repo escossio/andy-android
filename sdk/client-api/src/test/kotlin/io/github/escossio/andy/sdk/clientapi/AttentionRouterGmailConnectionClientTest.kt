@@ -25,6 +25,45 @@ class AttentionRouterGmailConnectionClientTest {
     }
 
     @Test
+    fun statusAcceptsExactReadonlyScope() = runBlocking {
+        val transport = FakeGmailTransport(
+            getResponse = response(
+                200,
+                """{"contract_version":"1","provider":"GOOGLE","product":"GMAIL","status":"CONNECTED","installation_id":"paz_synthetic","granted_scopes":["$GMAIL_READONLY_SCOPE"]}""",
+            ),
+        )
+        val result = AttentionRouterGmailConnectionClient(
+            "https://example.invalid",
+            transport,
+        ).getGmailConnection(session())
+
+        assertTrue(result is GmailConnectionResult.Success)
+        val connection = (result as GmailConnectionResult.Success).connection
+        assertEquals(setOf(GMAIL_READONLY_SCOPE), connection.grantedScopes)
+    }
+
+    @Test
+    fun statusRejectsCombinedMetadataAndReadonlyScopes() = runBlocking {
+        val transport = FakeGmailTransport(
+            getResponse = response(
+                200,
+                """{"contract_version":"1","provider":"GOOGLE","product":"GMAIL","status":"CONNECTED","installation_id":"paz_synthetic","granted_scopes":["$GMAIL_METADATA_SCOPE","$GMAIL_READONLY_SCOPE"]}""",
+            ),
+        )
+        val result = AttentionRouterGmailConnectionClient(
+            "https://example.invalid",
+            transport,
+        ).getGmailConnection(session())
+
+        assertEquals(
+            GmailConnectionResult.Failure(
+                GmailConnectionErrorCode.UNEXPECTED_RESPONSE,
+            ),
+            result,
+        )
+    }
+
+    @Test
     fun connectSendsOnlyAuthorizationCodeUnderClientSession() = runBlocking {
         val transport = FakeGmailTransport(
             postResponse = response(200, connectedBody()),
