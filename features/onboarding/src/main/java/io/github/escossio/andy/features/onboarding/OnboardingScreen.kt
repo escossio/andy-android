@@ -43,6 +43,7 @@ fun OnboardingScreen(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    approvalContent: @Composable () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -64,6 +65,7 @@ fun OnboardingScreen(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                approvalContent = approvalContent,
             )
         } else {
             HumanIdentityContent(
@@ -223,6 +225,7 @@ private fun SessionContent(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    approvalContent: @Composable () -> Unit,
 ) {
     when (sessionState) {
         ClientSessionState.Idle -> Unit
@@ -249,6 +252,7 @@ private fun SessionContent(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                approvalContent = approvalContent,
             )
         is ClientSessionState.Failure -> {
             MessageCard(
@@ -270,27 +274,18 @@ private fun ConnectedHome(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    approvalContent: @Composable () -> Unit,
 ) {
     HeroCard(memberships = state.bootstrap.memberships.size)
 
     SectionTitle("Seu painel")
-    Row(
+    approvalContent()
+    FeatureTile(
+        title = "Contexto",
+        body = "Preferências, memória e informações pessoais.",
+        badge = "EM BREVE",
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        FeatureTile(
-            title = "Aprovações",
-            body = "Autorize decisões importantes da Andy.",
-            badge = "PRÓXIMA",
-            modifier = Modifier.weight(1f),
-        )
-        FeatureTile(
-            title = "Contexto",
-            body = "Preferências, memória e informações pessoais.",
-            badge = "EM BREVE",
-            modifier = Modifier.weight(1f),
-        )
-    }
+    )
 
     SectionTitle("Serviços")
     GmailCard(
