@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-presentation-shell-v1",
+  "branch": "feat/android-presentation-shell-v1",
+  "allowed_paths": [
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt"
+  ],
+  "required_artifacts": [
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "okhttp",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "androidx\\.security",
+    "firebase",
+    "androidx\\.work",
+    "GoogleSignIn",
+    "android\\.permission\\.",
+    "java\\.net\\.",
+    "HttpURLConnection",
+    "whatsapp"
+  ]
+}
