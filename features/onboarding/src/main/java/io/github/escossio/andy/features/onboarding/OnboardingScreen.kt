@@ -64,7 +64,6 @@ fun OnboardingScreen(
                 locationState = locationState,
                 gmailState = gmailState,
                 cameraPermissionGranted = cameraPermissionGranted,
-                presenceMotion = presenceMotion,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onRetrySession = onRetrySession,
                 onRestartHuman = onRetryHuman,
@@ -228,7 +227,6 @@ private fun SessionContent(
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
     cameraPermissionGranted: Boolean,
-    presenceMotion: AndyPresenceMotion,
     onRequestCameraPermission: () -> Unit,
     onRetrySession: () -> Unit,
     onRestartHuman: () -> Unit,
@@ -284,7 +282,6 @@ private fun ConnectedHome(
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
     cameraPermissionGranted: Boolean,
-    presenceMotion: AndyPresenceMotion,
     onRequestCameraPermission: () -> Unit,
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
@@ -294,7 +291,6 @@ private fun ConnectedHome(
 ) {
     VisualPresenceCard(
         cameraPermissionGranted = cameraPermissionGranted,
-        presenceMotion = presenceMotion,
         onRequestCameraPermission = onRequestCameraPermission,
     )
     HeroCard()
@@ -326,11 +322,10 @@ private fun ConnectedHome(
 @Composable
 private fun VisualPresenceCard(
     cameraPermissionGranted: Boolean,
-    presenceMotion: AndyPresenceMotion,
     onRequestCameraPermission: () -> Unit,
 ) {
     SurfaceCard {
-        AndyPresenceAvatar(presenceMotion = presenceMotion)
+        AndyPresenceAvatar()
         Spacer(Modifier.height(14.dp))
         AppText(
             text = "Andy está aqui.",
