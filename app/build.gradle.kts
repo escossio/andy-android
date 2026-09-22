@@ -39,6 +39,7 @@ dependencies {
     implementation(project(":data:location"))
     implementation(project(":features:onboarding"))
     implementation(project(":features:approvals"))
+    implementation(project(":features:command"))
     implementation(project(":sdk:client-api"))
     implementation(project(":integrations:google-identity"))
     implementation(project(":integrations:google-authorization"))

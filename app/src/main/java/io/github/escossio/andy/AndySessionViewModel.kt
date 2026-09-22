@@ -14,6 +14,7 @@ import io.github.escossio.andy.data.deviceidentity.AndroidDeviceIdentityFactory
 import io.github.escossio.andy.data.location.AndroidForegroundLocationProvider
 import io.github.escossio.andy.data.location.ForegroundLocationResult
 import io.github.escossio.andy.features.approvals.ApprovalCoordinator
+import io.github.escossio.andy.features.command.CommandCoordinator
 import io.github.escossio.andy.features.onboarding.ClientLocationFailure
 import io.github.escossio.andy.features.onboarding.ClientSessionState
 import io.github.escossio.andy.features.onboarding.OnboardingConfiguration
@@ -25,6 +26,7 @@ import io.github.escossio.andy.integrations.googleauthorization.AndroidGoogleAut
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientApprovalClient
+import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientCommandClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientLocationClient
 import io.github.escossio.andy.sdk.clientapi.ClientLocationObservation
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientSessionClient
@@ -53,6 +55,13 @@ class AndySessionViewModel private constructor(
 
     val approvalCoordinator = ApprovalCoordinator(
         client = AttentionRouterClientApprovalClient(
+            BuildConfig.ATTENTION_ROUTER_BASE_URL,
+        ),
+        sessionProvider = { sessionStore.load() },
+    )
+
+    val commandCoordinator = CommandCoordinator(
+        client = AttentionRouterClientCommandClient(
             BuildConfig.ATTENTION_ROUTER_BASE_URL,
         ),
         sessionProvider = { sessionStore.load() },
@@ -106,6 +115,12 @@ class AndySessionViewModel private constructor(
     fun refreshApprovalsIfConnected() {
         if (coordinator.sessionState.value is ClientSessionState.Connected) {
             scope.launch { approvalCoordinator.refresh() }
+        }
+    }
+
+    fun refreshCommandsIfConnected() {
+        if (coordinator.sessionState.value is ClientSessionState.Connected) {
+            scope.launch { commandCoordinator.refresh() }
         }
     }
 
