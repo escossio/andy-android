@@ -314,6 +314,7 @@ class OnboardingCoordinatorTest {
         assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
         assertEquals(1, store.clearCalls)
         assertEquals(1, session.startCalls)
+        assertEquals(listOf("tnt_synthetic"), session.requestedTenantIds)
         assertEquals(1, session.completeCalls)
         assertEquals(1, session.bootstrapCalls)
         assertEquals(1, store.saveCalls)
@@ -336,6 +337,7 @@ class OnboardingCoordinatorTest {
         assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
         assertEquals(1, store.clearCalls)
         assertEquals(1, session.startCalls)
+        assertEquals(listOf("tnt_synthetic"), session.requestedTenantIds)
         assertEquals(1, session.completeCalls)
         assertEquals(2, session.bootstrapCalls)
         assertEquals(1, store.saveCalls)
@@ -667,12 +669,14 @@ class OnboardingCoordinatorTest {
         var startCalls = 0
         var completeCalls = 0
         var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
 
         override suspend fun start(
             publicKeySpkiB64Url: String,
             requestedTenantId: String?,
         ): ClientSessionChallengeResult {
             startCalls++
+            requestedTenantIds += requestedTenantId
             return start
         }
 
@@ -729,12 +733,14 @@ class OnboardingCoordinatorTest {
         var startCalls = 0
         var completeCalls = 0
         var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
 
         override suspend fun start(
             publicKeySpkiB64Url: String,
             requestedTenantId: String?,
         ): ClientSessionChallengeResult {
             startCalls++
+            requestedTenantIds += requestedTenantId
             return ClientSessionChallengeResult.Success(sessionChallenge())
         }
 
