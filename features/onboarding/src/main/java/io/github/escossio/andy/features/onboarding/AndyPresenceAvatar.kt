@@ -154,7 +154,7 @@ internal fun AndyPresenceAvatar(
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(1f),
+            .aspectRatio(3f / 4f),
     ) {
         val w = size.width
         val h = size.height
