@@ -1,6 +1,7 @@
 package io.github.escossio.andy
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,9 +13,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModelProvider
 import io.github.escossio.andy.features.approvals.ApprovalPanel
 import io.github.escossio.andy.features.command.CommandPanel
@@ -69,6 +74,31 @@ private fun AndyBootstrap(
     val gmailState by coordinator.gmailState.collectAsState()
     val approvalState by approvalCoordinator.state.collectAsState()
     val commandState by commandCoordinator.state.collectAsState()
+    val context = LocalContext.current
+    var cameraPermissionGranted by remember {
+        mutableStateOf(
+            context.checkSelfPermission(Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var cameraPrompted by remember { mutableStateOf(false) }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        cameraPermissionGranted = granted
+    }
+
+    LaunchedEffect(sessionState, cameraPermissionGranted) {
+        if (
+            sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected &&
+            !cameraPermissionGranted &&
+            !cameraPrompted
+        ) {
+            cameraPrompted = true
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
@@ -101,6 +131,10 @@ private fun AndyBootstrap(
             sessionState = sessionState,
             locationState = locationState,
             gmailState = gmailState,
+            cameraPermissionGranted = cameraPermissionGranted,
+            onRequestCameraPermission = {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            },
             onContinue = {
                 scope.launch { coordinator.continueWithGoogle() }
             },
