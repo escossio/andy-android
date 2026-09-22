@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider
 import io.github.escossio.andy.features.approvals.ApprovalPanel
+import io.github.escossio.andy.features.command.CommandPanel
 import io.github.escossio.andy.features.onboarding.ClientLocationFailure
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.features.onboarding.OnboardingScreen
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         sessionViewModel.refreshApprovalsIfConnected()
+        sessionViewModel.refreshCommandsIfConnected()
     }
 
     override fun onDestroy() {
@@ -58,6 +60,7 @@ private fun AndyBootstrap(
 ) {
     val coordinator: OnboardingCoordinator = viewModel.coordinator
     val approvalCoordinator = viewModel.approvalCoordinator
+    val commandCoordinator = viewModel.commandCoordinator
     val scope = rememberCoroutineScope()
     val state by coordinator.state.collectAsState()
     val bootstrapState by coordinator.bootstrapState.collectAsState()
@@ -65,13 +68,16 @@ private fun AndyBootstrap(
     val locationState by coordinator.locationState.collectAsState()
     val gmailState by coordinator.gmailState.collectAsState()
     val approvalState by approvalCoordinator.state.collectAsState()
+    val commandState by commandCoordinator.state.collectAsState()
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
             coordinator.refreshGmailConnection()
             approvalCoordinator.refresh()
+            commandCoordinator.refresh()
         } else {
             approvalCoordinator.reset()
+            commandCoordinator.reset()
         }
     }
 
@@ -123,6 +129,20 @@ private fun AndyBootstrap(
             },
             onDisconnectGmail = {
                 scope.launch { coordinator.disconnectGmail() }
+            },
+            commandContent = {
+                CommandPanel(
+                    state = commandState,
+                    voiceListening = false,
+                    microphoneEnabled = false,
+                    onSend = { text ->
+                        scope.launch { commandCoordinator.submit(text) }
+                    },
+                    onRefresh = {
+                        scope.launch { commandCoordinator.refresh() }
+                    },
+                    onMicrophone = {},
+                )
             },
             approvalContent = {
                 ApprovalPanel(

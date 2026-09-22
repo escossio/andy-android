@@ -43,6 +43,7 @@ fun OnboardingScreen(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
     Column(
@@ -65,6 +66,7 @@ fun OnboardingScreen(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                commandContent = commandContent,
                 approvalContent = approvalContent,
             )
         } else {
@@ -225,6 +227,7 @@ private fun SessionContent(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
     when (sessionState) {
@@ -252,6 +255,7 @@ private fun SessionContent(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                commandContent = commandContent,
                 approvalContent = approvalContent,
             )
         is ClientSessionState.Failure -> {
@@ -274,9 +278,13 @@ private fun ConnectedHome(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
     HeroCard(memberships = state.bootstrap.memberships.size)
+
+    SectionTitle("Conversa")
+    commandContent()
 
     SectionTitle("Seu painel")
     approvalContent()
