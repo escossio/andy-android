@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.Instant
+import java.util.logging.Logger
 
 data class OnboardingConfiguration(
     val clientApiBaseUrl: String,
@@ -63,6 +64,8 @@ class OnboardingCoordinator(
     private val sessionStore: ClientSessionStore = NoopClientSessionStore,
     private val now: () -> Instant = Instant::now,
     private val engine: HumanIdentityEngine = HumanIdentityEngine(ready),
+    private val sessionTelemetry: (String, Map<String, String>) -> Unit =
+        ::logSecureSessionEvent,
 ) {
     private val mutable = MutableStateFlow(engine.state)
     val state: StateFlow<HumanIdentityState> = mutable.asStateFlow()
@@ -112,7 +115,7 @@ class OnboardingCoordinator(
             validatedIdentity = null
             clientSession = null
             bootstrapMutable.value = DeviceBootstrapState.Idle
-            sessionMutable.value = ClientSessionState.Idle
+            transitionSession(ClientSessionState.Idle, "GOOGLE_REAUTH")
             gmailMutable.value = GmailConnectionState.Idle
             true
         }
@@ -300,6 +303,11 @@ class OnboardingCoordinator(
 
     suspend fun retryClientSession() {
         sessionMutex.withLock {
+            emitSessionEvent(
+                "SECURE_RETRY_CLICK",
+                "state" to sessionMutable.value.telemetryName(),
+                "has_session" to (clientSession != null).toString(),
+            )
             if (sessionMutable.value is ClientSessionState.Connected) return@withLock
 
             val current = clientSession
@@ -309,19 +317,27 @@ class OnboardingCoordinator(
             }
 
             if (!current.expiresAt.isAfter(now())) {
-                if (!clearStoredSession()) return@withLock
-                clientSession = null
-                establishFreshSession(automatic = false)
+                val requestedTenantId = current.tenantId
+                emitSessionEvent("CLIENT_SESSION_VALIDATION", "result" to "EXPIRED")
+                establishFreshSession(
+                    automatic = false,
+                    requestedTenantIdOverride = requestedTenantId,
+                    trigger = SessionRefreshTrigger.EXPIRED,
+                )
                 return@withLock
             }
 
+            emitSessionEvent("CLIENT_SESSION_VALIDATION", "result" to "PRESENT_UNEXPIRED")
             when (bootstrapCurrentSession()) {
                 SessionBootstrapOutcome.CONNECTED,
                 SessionBootstrapOutcome.FAILURE -> Unit
                 SessionBootstrapOutcome.INVALID -> {
-                    if (!clearStoredSession()) return@withLock
-                    clientSession = null
-                    establishFreshSession(automatic = false)
+                    val requestedTenantId = current.tenantId
+                    establishFreshSession(
+                        automatic = false,
+                        requestedTenantIdOverride = requestedTenantId,
+                        trigger = SessionRefreshTrigger.REJECTED,
+                    )
                 }
             }
         }
@@ -345,7 +361,7 @@ class OnboardingCoordinator(
         val reset = sessionMutex.withLock {
             if (!clearStoredSession()) return@withLock false
             clientSession = null
-            sessionMutable.value = ClientSessionState.Idle
+            transitionSession(ClientSessionState.Idle, "AUTH_RESTART")
             gmailMutable.value = GmailConnectionState.Idle
             true
         }
@@ -406,7 +422,10 @@ class OnboardingCoordinator(
                     bootstrapMutable.value =
                         DeviceBootstrapState.Established(result.established)
                     sessionMutex.withLock {
-                        establishFreshSession(automatic = false)
+                        establishFreshSession(
+                            automatic = false,
+                            trigger = SessionRefreshTrigger.DEVICE_BOOTSTRAP,
+                        )
                     }
                 }
             }
@@ -419,66 +438,117 @@ class OnboardingCoordinator(
         val stored = try {
             sessionStore.load()
         } catch (_: Exception) {
+            emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "ERROR")
             failSession(ClientSessionFailure.SESSION_STORAGE_UNAVAILABLE)
             return
         }
 
         if (stored == null) {
-            establishFreshSession(automatic)
+            emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "ABSENT")
+            establishFreshSession(
+                automatic = automatic,
+                trigger = SessionRefreshTrigger.NO_STORED_SESSION,
+            )
             return
         }
 
-        if (!stored.expiresAt.isAfter(now())) {
-            if (!clearStoredSession()) return
-            clientSession = null
-            establishFreshSession(automatic)
-            return
-        }
-
+        emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "PRESENT")
         clientSession = stored
-        sessionMutable.value = ClientSessionState.Restoring
+        if (!stored.expiresAt.isAfter(now())) {
+            val requestedTenantId = stored.tenantId
+            emitSessionEvent("CLIENT_SESSION_VALIDATION", "result" to "EXPIRED")
+            establishFreshSession(
+                automatic = automatic,
+                requestedTenantIdOverride = requestedTenantId,
+                trigger = SessionRefreshTrigger.EXPIRED,
+            )
+            return
+        }
+
+        emitSessionEvent("CLIENT_SESSION_VALIDATION", "result" to "PRESENT_UNEXPIRED")
+        transitionSession(ClientSessionState.Restoring, "STORED_SESSION_PRESENT")
         when (bootstrapCurrentSession()) {
             SessionBootstrapOutcome.CONNECTED,
             SessionBootstrapOutcome.FAILURE -> Unit
             SessionBootstrapOutcome.INVALID -> {
-                if (!clearStoredSession()) return
-                clientSession = null
-                establishFreshSession(automatic)
+                val requestedTenantId = stored.tenantId
+                establishFreshSession(
+                    automatic = automatic,
+                    requestedTenantIdOverride = requestedTenantId,
+                    trigger = SessionRefreshTrigger.REJECTED,
+                )
             }
         }
     }
 
-    private suspend fun establishFreshSession(automatic: Boolean) {
+    private suspend fun establishFreshSession(
+        automatic: Boolean,
+        requestedTenantIdOverride: String? = null,
+        trigger: SessionRefreshTrigger = SessionRefreshTrigger.NO_STORED_SESSION,
+    ) {
         if (!deviceReady) {
+            emitSessionEvent("CLIENT_IDENTITY_LOAD", "result" to "UNAVAILABLE")
             failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
             return
         }
 
-        sessionMutable.value = ClientSessionState.Establishing
+        val previousSession = clientSession
+        transitionSession(ClientSessionState.Establishing, "SESSION_REFRESH")
         val publicKey = try {
             devicePublicKeySpki()
         } catch (_: Exception) {
             null
-        } ?: return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+        }
+        if (publicKey == null) {
+            emitSessionEvent("CLIENT_IDENTITY_LOAD", "result" to "UNAVAILABLE")
+            failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+            return
+        }
+        emitSessionEvent("CLIENT_IDENTITY_LOAD", "result" to "READY")
 
         val requestedTenantId =
-            (bootstrapMutable.value as? DeviceBootstrapState.Established)
-                ?.authority
-                ?.initialTenantId
+            requestedTenantIdOverride
+                ?: (bootstrapMutable.value as? DeviceBootstrapState.Established)
+                    ?.authority
+                    ?.initialTenantId
+        emitSessionEvent(
+            "CLIENT_SESSION_REFRESH_START",
+            "automatic" to automatic.toString(),
+            "tenant_hint" to if (requestedTenantId == null) "ABSENT" else "PRESENT",
+            "trigger" to trigger.name,
+        )
 
+        emitSessionEvent(
+            "CLIENT_SESSION_REFRESH_HTTP",
+            "operation" to "CHALLENGE_START",
+            "phase" to "START",
+        )
         val challenge = when (
             val result = sessionClient.start(
                 publicKeySpkiB64Url = publicKey,
                 requestedTenantId = requestedTenantId,
             )
         ) {
-            is ClientSessionChallengeResult.Success -> result.challenge
+            is ClientSessionChallengeResult.Success -> {
+                emitSessionEvent(
+                    "CLIENT_SESSION_REFRESH_HTTP_RESULT",
+                    "operation" to "CHALLENGE_START",
+                    "result" to "SUCCESS",
+                )
+                result.challenge
+            }
             is ClientSessionChallengeResult.Failure -> {
+                emitSessionEvent(
+                    "CLIENT_SESSION_REFRESH_HTTP_RESULT",
+                    "category" to result.error.name,
+                    "operation" to "CHALLENGE_START",
+                    "result" to "FAILURE",
+                )
                 if (
                     automatic &&
                     result.error == ClientSessionErrorCode.CLIENT_SESSION_DEVICE_REJECTED
                 ) {
-                    sessionMutable.value = ClientSessionState.Idle
+                    transitionSession(ClientSessionState.Idle, "UNKNOWN_DEVICE")
                 } else {
                     failSession(result.error.failure())
                 }
@@ -490,16 +560,40 @@ class OnboardingCoordinator(
             signDeviceChallenge(challenge.challengeB64Url)
         } catch (_: Exception) {
             null
-        } ?: return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+        }
+        if (signature == null) {
+            emitSessionEvent("CLIENT_SESSION_SIGNATURE", "result" to "UNAVAILABLE")
+            failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
+            return
+        }
+        emitSessionEvent("CLIENT_SESSION_SIGNATURE", "result" to "SUCCESS")
 
+        emitSessionEvent(
+            "CLIENT_SESSION_REFRESH_HTTP",
+            "operation" to "CHALLENGE_COMPLETE",
+            "phase" to "START",
+        )
         val issued = when (
             val result = sessionClient.complete(
                 challenge.challengeId,
                 signature,
             )
         ) {
-            is ClientSessionCompleteResult.Success -> result.session
+            is ClientSessionCompleteResult.Success -> {
+                emitSessionEvent(
+                    "CLIENT_SESSION_REFRESH_HTTP_RESULT",
+                    "operation" to "CHALLENGE_COMPLETE",
+                    "result" to "SUCCESS",
+                )
+                result.session
+            }
             is ClientSessionCompleteResult.Failure -> {
+                emitSessionEvent(
+                    "CLIENT_SESSION_REFRESH_HTTP_RESULT",
+                    "category" to result.error.name,
+                    "operation" to "CHALLENGE_COMPLETE",
+                    "result" to "FAILURE",
+                )
                 failSession(result.error.failure())
                 return
             }
@@ -515,18 +609,17 @@ class OnboardingCoordinator(
                     (
                         established.initialTenantId != null &&
                             established.initialTenantId != issued.tenantId
-                    )
+                )
             )
         ) {
-            clientSession = null
+            clientSession = previousSession
             failSession(ClientSessionFailure.SESSION_BOOTSTRAP_MISMATCH)
             return
         }
 
         clientSession = issued
         if (bootstrapCurrentSession() == SessionBootstrapOutcome.INVALID) {
-            clearStoredSession()
-            clientSession = null
+            clientSession = previousSession
         }
     }
 
@@ -537,9 +630,19 @@ class OnboardingCoordinator(
                 return SessionBootstrapOutcome.INVALID
             }
 
-        sessionMutable.value = ClientSessionState.LoadingBootstrap
+        transitionSession(ClientSessionState.LoadingBootstrap, "BOOTSTRAP_START")
+        emitSessionEvent(
+            "CLIENT_SESSION_REFRESH_HTTP",
+            "operation" to "BOOTSTRAP",
+            "phase" to "START",
+        )
         return when (val result = sessionClient.bootstrap(session)) {
             is AuthenticatedBootstrapResult.Success -> {
+                emitSessionEvent(
+                    "CLIENT_SESSION_REFRESH_HTTP_RESULT",
+                    "operation" to "BOOTSTRAP",
+                    "result" to "SUCCESS",
+                )
                 val bootstrap = result.bootstrap
                 if (
                     bootstrap.humanIdentityId != session.humanIdentityId ||
@@ -557,13 +660,28 @@ class OnboardingCoordinator(
                         failSession(ClientSessionFailure.SESSION_STORAGE_UNAVAILABLE)
                         return SessionBootstrapOutcome.FAILURE
                     }
-                    sessionMutable.value = ClientSessionState.Connected(bootstrap)
+                    emitSessionEvent("CLIENT_SESSION_ACCEPTED", "persisted" to "true")
+                    transitionSession(
+                        ClientSessionState.Connected(bootstrap),
+                        "BOOTSTRAP_ACCEPTED",
+                    )
                     SessionBootstrapOutcome.CONNECTED
                 }
             }
             is AuthenticatedBootstrapResult.Failure -> {
+                emitSessionEvent(
+                    "CLIENT_SESSION_REFRESH_HTTP_RESULT",
+                    "category" to result.error.name,
+                    "operation" to "BOOTSTRAP",
+                    "result" to "FAILURE",
+                )
                 failSession(result.error.failure())
                 if (result.error.invalidatesStoredCredential()) {
+                    emitSessionEvent(
+                        "CLIENT_SESSION_VALIDATION",
+                        "category" to result.error.name,
+                        "result" to "REJECTED",
+                    )
                     SessionBootstrapOutcome.INVALID
                 } else {
                     SessionBootstrapOutcome.FAILURE
@@ -642,7 +760,36 @@ class OnboardingCoordinator(
     }
 
     private fun failSession(reason: ClientSessionFailure) {
-        sessionMutable.value = ClientSessionState.Failure(reason)
+        emitSessionEvent("CLIENT_SESSION_REJECTED", "category" to reason.name)
+        transitionSession(ClientSessionState.Failure(reason), "SESSION_FAILURE")
+    }
+
+    private fun transitionSession(next: ClientSessionState, cause: String) {
+        val previous = sessionMutable.value
+        sessionMutable.value = next
+        emitSessionEvent(
+            "SECURE_UI_STATE_CHANGE",
+            "cause" to cause,
+            "from" to previous.telemetryName(),
+            "to" to next.telemetryName(),
+        )
+    }
+
+    private fun emitSessionEvent(event: String, vararg fields: Pair<String, String>) {
+        try {
+            sessionTelemetry(event, mapOf(*fields))
+        } catch (_: Exception) {
+            // Telemetry must never change authentication behavior.
+        }
+    }
+
+    private fun ClientSessionState.telemetryName() = when (this) {
+        ClientSessionState.Idle -> "IDLE"
+        ClientSessionState.Restoring -> "RESTORING"
+        ClientSessionState.Establishing -> "ESTABLISHING"
+        ClientSessionState.LoadingBootstrap -> "LOADING_BOOTSTRAP"
+        is ClientSessionState.Connected -> "CONNECTED"
+        is ClientSessionState.Failure -> "FAILURE"
     }
 
     private fun failBootstrap(reason: DeviceBootstrapFailure) {
@@ -774,4 +921,20 @@ class OnboardingCoordinator(
         INVALID,
         FAILURE,
     }
+
+    private enum class SessionRefreshTrigger {
+        NO_STORED_SESSION,
+        DEVICE_BOOTSTRAP,
+        EXPIRED,
+        REJECTED,
+    }
+}
+
+private val secureSessionLogger = Logger.getLogger("AndySecureSession")
+
+private fun logSecureSessionEvent(event: String, fields: Map<String, String>) {
+    val attributes = fields.entries
+        .sortedBy { it.key }
+        .joinToString(separator = " ") { (key, value) -> "$key=$value" }
+    secureSessionLogger.info("event=$event $attributes".trimEnd())
 }

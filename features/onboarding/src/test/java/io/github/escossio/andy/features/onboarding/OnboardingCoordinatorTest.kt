@@ -49,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -296,7 +297,7 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
-    fun expiredStoredSessionIsPurgedThenFreshPossessionEstablishesOneSession() = runBlocking {
+    fun expiredStoredSessionIsReplacedOnlyAfterFreshPossessionSucceeds() = runBlocking {
         val expired = sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))
         val store = FakeSessionStore(expired)
         val session = FakeSessionClient()
@@ -312,16 +313,20 @@ class OnboardingCoordinatorTest {
         coordinator.restoreClientSessionOnStartup()
 
         assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
-        assertEquals(1, store.clearCalls)
+        assertEquals(0, store.clearCalls)
         assertEquals(1, session.startCalls)
+        assertEquals(listOf("tnt_synthetic"), session.requestedTenantIds)
         assertEquals(1, session.completeCalls)
         assertEquals(1, session.bootstrapCalls)
         assertEquals(1, store.saveCalls)
+        assertNotSame(expired, store.current)
+        assertEquals(Instant.parse("2030-01-01T00:15:00Z"), store.current?.expiresAt)
     }
 
     @Test
-    fun rejectedStoredSessionIsPurgedThenFreshPossessionIsUsed() = runBlocking {
-        val store = FakeSessionStore(sessionCredential())
+    fun rejectedStoredSessionIsReplacedOnlyAfterFreshPossessionSucceeds() = runBlocking {
+        val stored = sessionCredential()
+        val store = FakeSessionStore(stored)
         val session = RestoreRejectedThenFreshSessionClient()
         val coordinator = coordinator(
             true,
@@ -334,11 +339,134 @@ class OnboardingCoordinatorTest {
         coordinator.restoreClientSessionOnStartup()
 
         assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
-        assertEquals(1, store.clearCalls)
+        assertEquals(0, store.clearCalls)
+        assertEquals(1, session.startCalls)
+        assertEquals(listOf("tnt_synthetic"), session.requestedTenantIds)
+        assertEquals(1, session.completeCalls)
+        assertEquals(2, session.bootstrapCalls)
+        assertEquals(1, store.saveCalls)
+        assertNotSame(stored, store.current)
+        assertEquals(Instant.parse("2030-01-01T00:15:00Z"), store.current?.expiresAt)
+    }
+
+    @Test
+    fun expiredRenewalTransientStartFailureThenManualRetryPreservesTenant() = runBlocking {
+        val expired = sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))
+        val store = FakeSessionStore(expired)
+        val session = TransientStartThenSuccessSessionClient()
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { Instant.parse("2029-01-01T00:00:00Z") },
+            sessionTelemetry = { event, fields -> events += event to fields },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertEquals(
+            ClientSessionState.Failure(ClientSessionFailure.NETWORK_FAILURE),
+            coordinator.sessionState.value,
+        )
+        assertSame(expired, store.current)
+        assertEquals(0, store.clearCalls)
+        assertEquals(0, store.saveCalls)
+
+        coordinator.retryClientSession()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(listOf("tnt_synthetic", "tnt_synthetic"), session.requestedTenantIds)
+        assertEquals(2, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+        assertEquals(1, store.saveCalls)
+        assertNotSame(expired, store.current)
+        assertEquals(Instant.parse("2030-01-01T00:15:00Z"), store.current?.expiresAt)
+        assertTrue(events.any { it.first == "SECURE_RETRY_CLICK" })
+        assertTrue(events.any { it.first == "CLIENT_SESSION_REFRESH_START" })
+        assertTrue(events.any { it.first == "CLIENT_SESSION_ACCEPTED" })
+        val renderedEvents = events.toString()
+        listOf(
+            SESSION_TOKEN,
+            HUMAN_ID,
+            DEVICE_ID,
+            "tnt_synthetic",
+            "A".repeat(120),
+            "c".repeat(96),
+        ).forEach { sensitive -> assertFalse(renderedEvents.contains(sensitive)) }
+    }
+
+    @Test
+    fun replacementBootstrapFailureKeepsOldStoreUntilAccepted() = runBlocking {
+        val expired = sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))
+        val store = FakeSessionStore(expired)
+        val session = SequencedSessionClient()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { Instant.parse("2029-01-01T00:00:00Z") },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertEquals(
+            ClientSessionState.Failure(ClientSessionFailure.NETWORK_FAILURE),
+            coordinator.sessionState.value,
+        )
+        assertSame(expired, store.current)
+        assertEquals(0, store.clearCalls)
+        assertEquals(0, store.saveCalls)
+
+        coordinator.retryClientSession()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
         assertEquals(1, session.startCalls)
         assertEquals(1, session.completeCalls)
         assertEquals(2, session.bootstrapCalls)
         assertEquals(1, store.saveCalls)
+        assertNotSame(expired, store.current)
+        assertEquals(Instant.parse("2030-01-01T00:15:00Z"), store.current?.expiresAt)
+    }
+
+    @Test
+    fun expiredRenewalFailureSurvivesCoordinatorRestart() = runBlocking {
+        val expired = sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))
+        val store = FakeSessionStore(expired)
+        val session = TransientStartThenSuccessSessionClient()
+
+        coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { Instant.parse("2029-01-01T00:00:00Z") },
+        ).restoreClientSessionOnStartup()
+
+        assertSame(expired, store.current)
+        assertEquals(0, store.clearCalls)
+
+        val restarted = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { Instant.parse("2029-01-01T00:00:00Z") },
+        )
+        restarted.restoreClientSessionOnStartup()
+
+        assertTrue(restarted.sessionState.value is ClientSessionState.Connected)
+        assertEquals(listOf("tnt_synthetic", "tnt_synthetic"), session.requestedTenantIds)
+        assertEquals(0, store.clearCalls)
+        assertEquals(1, store.saveCalls)
+        assertNotSame(expired, store.current)
     }
 
     @Test
@@ -493,6 +621,7 @@ class OnboardingCoordinatorTest {
         now: () -> Instant = { Instant.parse("2029-01-01T00:00:00Z") },
         gmailClient: GmailConnectionClient? = null,
         gmailAuthorization: GoogleAuthorizationAcquirer? = null,
+        sessionTelemetry: (String, Map<String, String>) -> Unit = { _, _ -> },
     ) = OnboardingCoordinator(
         ready = ready,
         config = OnboardingConfiguration(
@@ -513,6 +642,7 @@ class OnboardingCoordinatorTest {
         signDeviceChallenge = { "c".repeat(96) },
         sessionStore = store,
         now = now,
+        sessionTelemetry = sessionTelemetry,
     )
 
     private class FakeGmailAuthorization(
@@ -667,12 +797,14 @@ class OnboardingCoordinatorTest {
         var startCalls = 0
         var completeCalls = 0
         var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
 
         override suspend fun start(
             publicKeySpkiB64Url: String,
             requestedTenantId: String?,
         ): ClientSessionChallengeResult {
             startCalls++
+            requestedTenantIds += requestedTenantId
             return start
         }
 
@@ -725,16 +857,53 @@ class OnboardingCoordinatorTest {
         }
     }
 
-    private class RestoreRejectedThenFreshSessionClient : ClientSessionClient {
+    private class TransientStartThenSuccessSessionClient : ClientSessionClient {
         var startCalls = 0
         var completeCalls = 0
         var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
 
         override suspend fun start(
             publicKeySpkiB64Url: String,
             requestedTenantId: String?,
         ): ClientSessionChallengeResult {
             startCalls++
+            requestedTenantIds += requestedTenantId
+            return if (startCalls == 1) {
+                ClientSessionChallengeResult.Failure(ClientSessionErrorCode.NETWORK_FAILURE)
+            } else {
+                ClientSessionChallengeResult.Success(sessionChallenge())
+            }
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            return ClientSessionCompleteResult.Success(sessionCredential())
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return AuthenticatedBootstrapResult.Success(authenticatedBootstrap())
+        }
+    }
+
+    private class RestoreRejectedThenFreshSessionClient : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            requestedTenantIds += requestedTenantId
             return ClientSessionChallengeResult.Success(sessionChallenge())
         }
 
