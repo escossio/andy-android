@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-command-channel-v1",
+  "branch": "feat/android-command-channel-v1",
+  "allowed_paths": [
+    "settings.gradle.kts",
+    "app/build.gradle.kts",
+    "app/src/main/AndroidManifest.xml",
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "app/src/main/java/io/github/escossio/andy/AndySessionViewModel.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClientTest.kt",
+    "features/command/build.gradle.kts",
+    "features/command/src/main/AndroidManifest.xml",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandCoordinator.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandPanel.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/AndroidVoiceCommandRecorder.kt",
+    "features/command/src/test/java/io/github/escossio/andy/features/command/CommandCoordinatorTest.kt"
+  ],
+  "required_artifacts": [
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClient.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandCoordinator.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandPanel.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "firebase",
+    "androidx\\.work",
+    "HttpURLConnection",
+    "java\\.net\\.",
+    "whatsapp",
+    "wamid",
+    "meta_whatsapp",
+    "postgres",
+    "docker"
+  ]
+}
