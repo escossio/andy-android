@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-client-session-tenant-renewal",
+  "branch": "fix/client-session-preserve-active-tenant",
+  "allowed_paths": [
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt"
+  ],
+  "required_artifacts": [
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt"
+  ],
+  "forbidden_content_patterns": [
+    "whatsapp",
+    "wamid",
+    "meta_whatsapp",
+    "HttpURLConnection",
+    "java\\.net\\.",
+    "firebase",
+    "androidx\\.room",
+    "androidx\\.datastore"
+  ]
+}
