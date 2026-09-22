@@ -309,9 +309,13 @@ class OnboardingCoordinator(
             }
 
             if (!current.expiresAt.isAfter(now())) {
+                val requestedTenantId = current.tenantId
                 if (!clearStoredSession()) return@withLock
                 clientSession = null
-                establishFreshSession(automatic = false)
+                establishFreshSession(
+                    automatic = false,
+                    requestedTenantIdOverride = requestedTenantId,
+                )
                 return@withLock
             }
 
@@ -319,9 +323,13 @@ class OnboardingCoordinator(
                 SessionBootstrapOutcome.CONNECTED,
                 SessionBootstrapOutcome.FAILURE -> Unit
                 SessionBootstrapOutcome.INVALID -> {
+                    val requestedTenantId = current.tenantId
                     if (!clearStoredSession()) return@withLock
                     clientSession = null
-                    establishFreshSession(automatic = false)
+                    establishFreshSession(
+                        automatic = false,
+                        requestedTenantIdOverride = requestedTenantId,
+                    )
                 }
             }
         }
@@ -429,9 +437,13 @@ class OnboardingCoordinator(
         }
 
         if (!stored.expiresAt.isAfter(now())) {
+            val requestedTenantId = stored.tenantId
             if (!clearStoredSession()) return
             clientSession = null
-            establishFreshSession(automatic)
+            establishFreshSession(
+                automatic = automatic,
+                requestedTenantIdOverride = requestedTenantId,
+            )
             return
         }
 
@@ -441,14 +453,21 @@ class OnboardingCoordinator(
             SessionBootstrapOutcome.CONNECTED,
             SessionBootstrapOutcome.FAILURE -> Unit
             SessionBootstrapOutcome.INVALID -> {
+                val requestedTenantId = stored.tenantId
                 if (!clearStoredSession()) return
                 clientSession = null
-                establishFreshSession(automatic)
+                establishFreshSession(
+                    automatic = automatic,
+                    requestedTenantIdOverride = requestedTenantId,
+                )
             }
         }
     }
 
-    private suspend fun establishFreshSession(automatic: Boolean) {
+    private suspend fun establishFreshSession(
+        automatic: Boolean,
+        requestedTenantIdOverride: String? = null,
+    ) {
         if (!deviceReady) {
             failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
             return
@@ -462,9 +481,10 @@ class OnboardingCoordinator(
         } ?: return failSession(ClientSessionFailure.DEVICE_IDENTITY_UNAVAILABLE)
 
         val requestedTenantId =
-            (bootstrapMutable.value as? DeviceBootstrapState.Established)
-                ?.authority
-                ?.initialTenantId
+            requestedTenantIdOverride
+                ?: (bootstrapMutable.value as? DeviceBootstrapState.Established)
+                    ?.authority
+                    ?.initialTenantId
 
         val challenge = when (
             val result = sessionClient.start(
