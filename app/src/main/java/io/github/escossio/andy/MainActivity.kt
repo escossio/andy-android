@@ -16,9 +16,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider
+import io.github.escossio.andy.features.approvals.ApprovalPanel
 import io.github.escossio.andy.features.onboarding.ClientLocationFailure
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.features.onboarding.OnboardingScreen
+import io.github.escossio.andy.sdk.clientapi.ClientApprovalDecision
 import kotlinx.coroutines.launch
 
 internal const val BOOTSTRAP_TEXT = "Andy"
@@ -39,6 +41,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        sessionViewModel.refreshApprovalsIfConnected()
+    }
+
     override fun onDestroy() {
         sessionViewModel.detachActivity(this)
         super.onDestroy()
@@ -50,16 +57,21 @@ private fun AndyBootstrap(
     viewModel: AndySessionViewModel,
 ) {
     val coordinator: OnboardingCoordinator = viewModel.coordinator
+    val approvalCoordinator = viewModel.approvalCoordinator
     val scope = rememberCoroutineScope()
     val state by coordinator.state.collectAsState()
     val bootstrapState by coordinator.bootstrapState.collectAsState()
     val sessionState by coordinator.sessionState.collectAsState()
     val locationState by coordinator.locationState.collectAsState()
     val gmailState by coordinator.gmailState.collectAsState()
+    val approvalState by approvalCoordinator.state.collectAsState()
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
             coordinator.refreshGmailConnection()
+            approvalCoordinator.refresh()
+        } else {
+            approvalCoordinator.reset()
         }
     }
 
@@ -111,6 +123,30 @@ private fun AndyBootstrap(
             },
             onDisconnectGmail = {
                 scope.launch { coordinator.disconnectGmail() }
+            },
+            approvalContent = {
+                ApprovalPanel(
+                    state = approvalState,
+                    onRefresh = {
+                        scope.launch { approvalCoordinator.refresh() }
+                    },
+                    onApprove = { approvalId ->
+                        scope.launch {
+                            approvalCoordinator.decide(
+                                approvalId,
+                                ClientApprovalDecision.APPROVE,
+                            )
+                        }
+                    },
+                    onDeny = { approvalId ->
+                        scope.launch {
+                            approvalCoordinator.decide(
+                                approvalId,
+                                ClientApprovalDecision.DENY,
+                            )
+                        }
+                    },
+                )
             },
         )
     }
