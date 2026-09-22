@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-visual-presence-v0",
+  "branch": "feat/android-visual-presence-v0",
+  "allowed_paths": [
+    "app/src/main/AndroidManifest.xml",
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/AndyPresenceAvatar.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/AndyPresenceAvatarTest.kt"
+  ],
+  "required_artifacts": [
+    "app/src/main/AndroidManifest.xml",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/AndyPresenceAvatar.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "okhttp",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "androidx\\.security",
+    "firebase",
+    "androidx\\.work",
+    "CameraX",
+    "androidx\\.camera",
+    "CameraDevice",
+    "ImageReader",
+    "MediaRecorder",
+    "RECORD_AUDIO",
+    "FaceDetector",
+    "MLKit",
+    "java\\.net\\.",
+    "HttpURLConnection",
+    "whatsapp"
+  ]
+}
