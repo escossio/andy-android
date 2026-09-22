@@ -35,6 +35,8 @@ fun OnboardingScreen(
     sessionState: ClientSessionState,
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
+    cameraPermissionGranted: Boolean,
+    onRequestCameraPermission: () -> Unit,
     onContinue: () -> Unit,
     onContinueSession: () -> Unit,
     onRetryHuman: () -> Unit,
@@ -61,6 +63,9 @@ fun OnboardingScreen(
                 sessionState = sessionState,
                 locationState = locationState,
                 gmailState = gmailState,
+                cameraPermissionGranted = cameraPermissionGranted,
+                presenceMotion = presenceMotion,
+                onRequestCameraPermission = onRequestCameraPermission,
                 onRetrySession = onRetrySession,
                 onRestartHuman = onRetryHuman,
                 onShareLocation = onShareLocation,
@@ -202,7 +207,7 @@ private fun BootstrapContent(
         is DeviceBootstrapState.Established ->
             MessageCard(
                 title = "Dispositivo conectado",
-                body = "A base segura está pronta. ${bootstrapState.authority.memberships.size} vínculo(s) disponível(is).",
+                body = "A base segura está pronta para iniciar sua sessão.",
                 tone = AccentSoft,
             )
         is DeviceBootstrapState.Failure -> {
@@ -222,6 +227,9 @@ private fun SessionContent(
     sessionState: ClientSessionState,
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
+    cameraPermissionGranted: Boolean,
+    presenceMotion: AndyPresenceMotion,
+    onRequestCameraPermission: () -> Unit,
     onRetrySession: () -> Unit,
     onRestartHuman: () -> Unit,
     onShareLocation: () -> Unit,
@@ -249,9 +257,10 @@ private fun SessionContent(
             )
         is ClientSessionState.Connected ->
             ConnectedHome(
-                state = sessionState,
                 locationState = locationState,
                 gmailState = gmailState,
+                cameraPermissionGranted = cameraPermissionGranted,
+                onRequestCameraPermission = onRequestCameraPermission,
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
@@ -272,16 +281,23 @@ private fun SessionContent(
 
 @Composable
 private fun ConnectedHome(
-    state: ClientSessionState.Connected,
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
+    cameraPermissionGranted: Boolean,
+    presenceMotion: AndyPresenceMotion,
+    onRequestCameraPermission: () -> Unit,
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
-    HeroCard(memberships = state.bootstrap.memberships.size)
+    VisualPresenceCard(
+        cameraPermissionGranted = cameraPermissionGranted,
+        presenceMotion = presenceMotion,
+        onRequestCameraPermission = onRequestCameraPermission,
+    )
+    HeroCard()
 
     SectionTitle("Conversa")
     commandContent()
@@ -308,7 +324,49 @@ private fun ConnectedHome(
 }
 
 @Composable
-private fun HeroCard(memberships: Int) {
+private fun VisualPresenceCard(
+    cameraPermissionGranted: Boolean,
+    presenceMotion: AndyPresenceMotion,
+    onRequestCameraPermission: () -> Unit,
+) {
+    SurfaceCard {
+        AndyPresenceAvatar(presenceMotion = presenceMotion)
+        Spacer(Modifier.height(14.dp))
+        AppText(
+            text = "Andy está aqui.",
+            size = 22,
+            weight = FontWeight.Bold,
+            color = Ink,
+        )
+        Spacer(Modifier.height(6.dp))
+        AppText(
+            text = if (cameraPermissionGranted) {
+                "Movimento local ativo. A câmera já está autorizada para a próxima camada de percepção visual."
+            } else {
+                "Ela já reage suavemente ao movimento do aparelho. Ative a câmera para preparar a percepção visual."
+            },
+            size = 14,
+            color = Muted,
+            lineHeight = 20,
+        )
+        Spacer(Modifier.height(14.dp))
+        ServiceStatus(
+            text = if (cameraPermissionGranted) {
+                "Câmera autorizada • nenhuma imagem é capturada nesta versão"
+            } else {
+                "Câmera desativada"
+            },
+            color = if (cameraPermissionGranted) Accent else Muted,
+        )
+        if (!cameraPermissionGranted) {
+            Spacer(Modifier.height(14.dp))
+            PrimaryButton("Ativar câmera", onRequestCameraPermission)
+        }
+    }
+}
+
+@Composable
+private fun HeroCard() {
     SurfaceCard(background = Accent) {
         StatusPill(
             text = "TUDO PRONTO",
@@ -328,12 +386,6 @@ private fun HeroCard(memberships: Int) {
             size = 15,
             color = Color.White.copy(alpha = 0.86f),
             lineHeight = 21,
-        )
-        Spacer(Modifier.height(18.dp))
-        AppText(
-            text = "$memberships vínculo(s) ativo(s) neste perfil",
-            size = 12,
-            color = Color.White.copy(alpha = 0.72f),
         )
     }
 }
