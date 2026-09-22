@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-native-approval-v1a",
+  "branch": "feat/android-native-approval-v1a",
+  "allowed_paths": [
+    "settings.gradle.kts",
+    "app/build.gradle.kts",
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "app/src/main/java/io/github/escossio/andy/AndySessionViewModel.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientApprovalClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientApprovalClientTest.kt",
+    "features/approvals/build.gradle.kts",
+    "features/approvals/src/main/AndroidManifest.xml",
+    "features/approvals/src/main/java/io/github/escossio/andy/features/approvals/ApprovalCoordinator.kt",
+    "features/approvals/src/main/java/io/github/escossio/andy/features/approvals/ApprovalPanel.kt",
+    "features/approvals/src/test/java/io/github/escossio/andy/features/approvals/ApprovalCoordinatorTest.kt"
+  ],
+  "required_artifacts": [
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientApprovalClient.kt",
+    "features/approvals/src/main/java/io/github/escossio/andy/features/approvals/ApprovalCoordinator.kt",
+    "features/approvals/src/main/java/io/github/escossio/andy/features/approvals/ApprovalPanel.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "androidx\\.security",
+    "firebase",
+    "androidx\\.work",
+    "GoogleSignIn",
+    "android\\.permission\\.",
+    "java\\.net\\.",
+    "HttpURLConnection",
+    "whatsapp",
+    "wamid",
+    "meta_whatsapp"
+  ]
+}
