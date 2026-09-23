@@ -35,8 +35,11 @@ import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterGmailConnectionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 
@@ -52,6 +55,7 @@ class AndySessionViewModel private constructor(
     private val locationProvider = AndroidForegroundLocationProvider(applicationContext)
     private val sessionStore = AndroidKeystoreClientSessionStore(applicationContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var foregroundSessionMaintenanceJob: Job? = null
 
     val approvalCoordinator = ApprovalCoordinator(
         client = AttentionRouterClientApprovalClient(
@@ -112,6 +116,27 @@ class AndySessionViewModel private constructor(
         }
     }
 
+    fun enterForeground() {
+        foregroundSessionMaintenanceJob?.cancel()
+        foregroundSessionMaintenanceJob = scope.launch {
+            coordinator.maintainClientSession()
+            if (coordinator.sessionState.value is ClientSessionState.Connected) {
+                approvalCoordinator.refresh()
+                commandCoordinator.refresh()
+            }
+
+            while (isActive) {
+                delay(SESSION_MAINTENANCE_INTERVAL_MILLIS)
+                coordinator.maintainClientSession()
+            }
+        }
+    }
+
+    fun leaveForeground() {
+        foregroundSessionMaintenanceJob?.cancel()
+        foregroundSessionMaintenanceJob = null
+    }
+
     fun refreshApprovalsIfConnected() {
         if (coordinator.sessionState.value is ClientSessionState.Connected) {
             scope.launch { approvalCoordinator.refresh() }
@@ -159,6 +184,7 @@ class AndySessionViewModel private constructor(
     }
 
     override fun onCleared() {
+        leaveForeground()
         authorizationBridge.close()
         scope.cancel()
         super.onCleared()
@@ -178,6 +204,7 @@ class AndySessionViewModel private constructor(
 
     companion object {
         private const val LOG_TAG = "AndyDeviceIdentity"
+        private const val SESSION_MAINTENANCE_INTERVAL_MILLIS = 30_000L
 
         fun factory(context: Context): ViewModelProvider.Factory {
             val applicationContext = context.applicationContext

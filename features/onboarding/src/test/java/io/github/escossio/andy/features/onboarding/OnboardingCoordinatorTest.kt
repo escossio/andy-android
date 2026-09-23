@@ -297,6 +297,77 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
+    fun foregroundMaintenanceDoesNotRenewFreshSession() = runBlocking {
+        val currentTime = Instant.parse("2029-01-01T00:00:00Z")
+        val stored = sessionCredential(currentTime.plusSeconds(300))
+        val store = FakeSessionStore(stored)
+        val session = MaintenanceSessionClient()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { currentTime },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.maintainClientSession()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+        assertEquals(1, session.bootstrapCalls)
+        assertSame(stored, store.current)
+    }
+
+    @Test
+    fun foregroundMaintenanceRenewsBeforeSessionExpiresAndPreservesTenant() = runBlocking {
+        val currentTime = Instant.parse("2029-01-01T00:00:00Z")
+        val nearlyExpired = sessionCredential(currentTime.plusSeconds(45))
+        val store = FakeSessionStore(nearlyExpired)
+        val session = MaintenanceSessionClient()
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            FakeBootstrapClient(),
+            session,
+            store,
+            now = { currentTime },
+            sessionTelemetry = { event, fields -> events += event to fields },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(0, session.startCalls)
+        assertEquals(1, session.bootstrapCalls)
+
+        coordinator.maintainClientSession()
+
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertEquals(1, session.startCalls)
+        assertEquals(listOf("tnt_synthetic"), session.requestedTenantIds)
+        assertEquals(1, session.completeCalls)
+        assertEquals(2, session.bootstrapCalls)
+        assertEquals(2, store.saveCalls)
+        assertNotSame(nearlyExpired, store.current)
+        assertEquals(Instant.parse("2030-01-01T00:15:00Z"), store.current?.expiresAt)
+        assertTrue(
+            events.any {
+                it.first == "CLIENT_SESSION_VALIDATION" &&
+                    it.second["result"] == "EXPIRING"
+            },
+        )
+        assertTrue(
+            events.any {
+                it.first == "CLIENT_SESSION_REFRESH_START" &&
+                    it.second["trigger"] == "EXPIRING"
+            },
+        )
+    }
+
+    @Test
     fun expiredStoredSessionIsReplacedOnlyAfterFreshPossessionSucceeds() = runBlocking {
         val expired = sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))
         val store = FakeSessionStore(expired)
@@ -824,6 +895,39 @@ class OnboardingCoordinatorTest {
         }
     }
 
+    private class MaintenanceSessionClient : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            requestedTenantIds += requestedTenantId
+            return ClientSessionChallengeResult.Success(sessionChallenge())
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            return ClientSessionCompleteResult.Success(sessionCredential())
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return AuthenticatedBootstrapResult.Success(
+                authenticatedBootstrap(session.expiresAt),
+            )
+        }
+    }
+
     private class SequencedSessionClient : ClientSessionClient {
         var startCalls = 0
         var completeCalls = 0
@@ -1024,7 +1128,9 @@ class OnboardingCoordinatorTest {
             tenantId = "tnt_synthetic",
         )
 
-        fun authenticatedBootstrap() = AuthenticatedClientBootstrap(
+        fun authenticatedBootstrap(
+            expiresAt: Instant = Instant.parse("2030-01-01T00:15:00Z"),
+        ) = AuthenticatedClientBootstrap(
             humanIdentityId = HUMAN_ID,
             activeTenantId = "tnt_synthetic",
             memberships = listOf(
@@ -1040,7 +1146,7 @@ class OnboardingCoordinatorTest {
                 "Synthetic Android",
                 setOf(DeviceBootstrapRole.CLIENT, DeviceBootstrapRole.CAPABILITY_NODE),
             ),
-            sessionExpiresAt = Instant.parse("2030-01-01T00:15:00Z"),
+            sessionExpiresAt = expiresAt,
             serverTime = Instant.parse("2030-01-01T00:08:00Z"),
         )
 

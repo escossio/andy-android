@@ -49,8 +49,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        sessionViewModel.refreshApprovalsIfConnected()
-        sessionViewModel.refreshCommandsIfConnected()
+        sessionViewModel.enterForeground()
+    }
+
+    override fun onPause() {
+        sessionViewModel.leaveForeground()
+        super.onPause()
     }
 
     override fun onDestroy() {
