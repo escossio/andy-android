@@ -22,8 +22,6 @@
     "java\\.net\\.",
     "firebase",
     "androidx\\.room",
-    "androidx\\.datastore",
-    "CAMERA",
-    "RECORD_AUDIO"
+    "androidx\\.datastore"
   ]
 }
