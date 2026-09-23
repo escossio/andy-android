@@ -108,6 +108,66 @@ class OnboardingCoordinator(
         }
     }
 
+    suspend fun maintainClientSession(
+        minimumValiditySeconds: Long = CLIENT_SESSION_RENEWAL_WINDOW_SECONDS,
+    ) {
+        require(minimumValiditySeconds >= 0)
+
+        sessionMutex.withLock {
+            if (!deviceReady) return@withLock
+
+            val current = clientSession
+            if (current == null) {
+                restoreOrEstablish(automatic = true)
+                return@withLock
+            }
+
+            val currentTime = now()
+            val renewBefore = currentTime.plusSeconds(minimumValiditySeconds)
+            if (!current.expiresAt.isAfter(renewBefore)) {
+                val trigger = if (current.expiresAt.isAfter(currentTime)) {
+                    emitSessionEvent(
+                        "CLIENT_SESSION_VALIDATION",
+                        "result" to "EXPIRING",
+                    )
+                    SessionRefreshTrigger.EXPIRING
+                } else {
+                    emitSessionEvent(
+                        "CLIENT_SESSION_VALIDATION",
+                        "result" to "EXPIRED",
+                    )
+                    SessionRefreshTrigger.EXPIRED
+                }
+                establishFreshSession(
+                    automatic = true,
+                    requestedTenantIdOverride = current.tenantId,
+                    trigger = trigger,
+                )
+                return@withLock
+            }
+
+            if (sessionMutable.value is ClientSessionState.Connected) {
+                return@withLock
+            }
+
+            emitSessionEvent(
+                "CLIENT_SESSION_VALIDATION",
+                "result" to "PRESENT_UNEXPIRED",
+            )
+            when (bootstrapCurrentSession()) {
+                SessionBootstrapOutcome.CONNECTED,
+                SessionBootstrapOutcome.FAILURE -> Unit
+                SessionBootstrapOutcome.INVALID -> {
+                    establishFreshSession(
+                        automatic = true,
+                        requestedTenantIdOverride = current.tenantId,
+                        trigger = SessionRefreshTrigger.REJECTED,
+                    )
+                }
+            }
+        }
+    }
+
     suspend fun continueWithGoogle() {
         val reset = sessionMutex.withLock {
             if (!clearStoredSession()) return@withLock false
@@ -926,9 +986,12 @@ class OnboardingCoordinator(
         NO_STORED_SESSION,
         DEVICE_BOOTSTRAP,
         EXPIRED,
+        EXPIRING,
         REJECTED,
     }
 }
+
+private const val CLIENT_SESSION_RENEWAL_WINDOW_SECONDS = 60L
 
 private val secureSessionLogger = Logger.getLogger("AndySecureSession")
 
