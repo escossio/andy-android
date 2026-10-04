@@ -1,5 +1,6 @@
 package io.github.escossio.andy.features.onboarding
 
+import android.content.pm.ApplicationInfo
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -31,6 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -63,8 +68,8 @@ fun OnboardingScreen(
             .fillMaxSize()
             .background(AppBackground)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         BrandHeader(connected = sessionState is ClientSessionState.Connected)
 
@@ -117,11 +122,13 @@ private fun BrandHeader(connected: Boolean) {
                 color = Muted,
             )
         }
-        StatusPill(
-            text = if (connected) "ONLINE" else "SEGURA",
-            foreground = if (connected) Accent else Ink,
-            background = if (connected) AccentSoft else QuietSurface,
-        )
+        if (connected) {
+            StatusPill(
+                text = "Sessão ativa",
+                foreground = Accent,
+                background = AccentSoft,
+            )
+        }
     }
 }
 
@@ -299,10 +306,7 @@ private fun ConnectedHome(
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
-    VisualPresenceCard()
-    HeroCard()
-
-    SectionTitle("Conversa")
+    VisualPresence()
     commandContent()
 
     SectionTitle("Seu painel")
@@ -327,7 +331,12 @@ private fun ConnectedHome(
 }
 
 @Composable
-private fun VisualPresenceCard() {
+private fun VisualPresence() {
+    val context = LocalContext.current
+    val isDebuggable = remember(context) {
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
+    var developerToolsVisible by remember { mutableStateOf(false) }
     var enabled by remember { mutableStateOf(true) }
     var elapsed by remember { mutableStateOf(0L) }
     var gestureStart by remember { mutableStateOf<Long?>(null) }
@@ -342,8 +351,14 @@ private fun VisualPresenceCard() {
             }
         }
     }
-    SurfaceCard {
-        Box(Modifier.fillMaxWidth().height(300.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(240.dp)
+                .semantics { contentDescription = "Andy, sua assistente" },
+            contentAlignment = Alignment.Center,
+        ) {
             val availability = PresenceStage(
                 input = PresenceInput(
                     elapsedMillis = elapsed,
@@ -354,51 +369,42 @@ private fun VisualPresenceCard() {
                 enabled = enabled,
                 modifier = Modifier.fillMaxSize(),
             )
-            if (presenceUsesFallback(enabled, availability)) AndyPresenceAvatar()
-        }
-        Spacer(Modifier.height(14.dp))
-        AppText("Andy está aqui.", 22, Ink, FontWeight.Bold)
-        AppText("Presença visual experimental • movimentos sintéticos e locais", 14, Muted)
-        Spacer(Modifier.height(10.dp))
-        SecondaryButton(if (enabled) "Usar avatar simples" else "Experimentar palco 3D") {
-            enabled = !enabled
-        }
-        if (enabled) {
-            Spacer(Modifier.height(8.dp))
-            SecondaryButton("Acenar") {
-                gestureStart = elapsed
-                gestureCancel = null
-            }
-            SecondaryButton("Interromper gesto") { gestureCancel = elapsed }
-            SecondaryButton("Trocar roupa") {
-                clothing = if (clothing == PresenceClothing.JADE) PresenceClothing.PLUM else PresenceClothing.JADE
+            if (presenceUsesFallback(enabled, availability)) {
+                AndyPresenceAvatar(Modifier.size(240.dp))
             }
         }
-    }
-}
-
-@Composable
-private fun HeroCard() {
-    SurfaceCard(background = Accent) {
-        StatusPill(
-            text = "TUDO PRONTO",
-            foreground = Color.White,
-            background = Color.White.copy(alpha = 0.16f),
-        )
-        Spacer(Modifier.height(14.dp))
-        AppText(
-            text = "Andy conectada.",
-            size = 26,
-            weight = FontWeight.Bold,
-            color = Color.White,
-        )
-        Spacer(Modifier.height(6.dp))
-        AppText(
-            text = "Sua sessão está segura e pronta para trabalhar por você.",
-            size = 15,
-            color = Color.White.copy(alpha = 0.86f),
-            lineHeight = 21,
-        )
+        if (isDebuggable) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(ButtonShape)
+                    .background(QuietSurface)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SecondaryButton(
+                    if (developerToolsVisible) "Fechar · Desenvolvedor" else "Desenvolvedor · Presence",
+                ) {
+                    developerToolsVisible = !developerToolsVisible
+                }
+                if (developerToolsVisible) {
+                    AppText("Validação local da presença visual", 13, Muted)
+                    SecondaryButton(if (enabled) "Usar avatar simples" else "Experimentar palco 3D") {
+                        enabled = !enabled
+                    }
+                    if (enabled) {
+                        SecondaryButton("Acenar") {
+                            gestureStart = elapsed
+                            gestureCancel = null
+                        }
+                        SecondaryButton("Interromper gesto") { gestureCancel = elapsed }
+                        SecondaryButton("Trocar roupa") {
+                            clothing = if (clothing == PresenceClothing.JADE) PresenceClothing.PLUM else PresenceClothing.JADE
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -676,7 +682,7 @@ private fun AppText(
     )
 }
 
-private val AppBackground = Color(0xFFF4F7F5)
+private val AppBackground = Color(0xFFF5F3ED)
 private val Surface = Color(0xFFFFFFFF)
 private val Ink = Color(0xFF17201C)
 private val Muted = Color(0xFF68736E)
