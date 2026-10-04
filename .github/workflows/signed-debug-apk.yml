@@ -1,0 +1,210 @@
+name: Signed Debug APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character commit SHA to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-candidate:
+    name: build-candidate-without-secrets
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      version_code: ${{ steps.version.outputs.code }}
+      version_name: ${{ steps.version.outputs.name }}
+    steps:
+      - name: Validate requested commit
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Checkout exact candidate without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android compile and signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$SDK_ROOT"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;36.0.0'
+          test -d "$SDK_ROOT/platforms/android-37.0"
+          test -x "$SDK_ROOT/build-tools/36.0.0/apksigner"
+
+      - name: Derive monotonic test-build identity
+        id: version
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_CODE="$(date -u +%y%j%H%M)"
+          [[ "$VERSION_CODE" =~ ^[0-9]{9}$ ]]
+          if (( 10#$VERSION_CODE <= 1003 )); then
+            echo 'VERSION_CODE_NOT_NEWER_THAN_INSTALLED_BASELINE'
+            exit 1
+          fi
+          SHORT_SHA="${CANDIDATE_SHA:0:8}"
+          VERSION_NAME="0.2.0-beta.${VERSION_CODE}+${SHORT_SHA}"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test candidate without signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon             :app:testDebugUnitTest             :app:assembleDebug             -PandyVersionCode="${{ steps.version.outputs.code }}"             -PandyVersionName="${{ steps.version.outputs.name }}"
+
+      - name: Verify candidate package identity
+        env:
+          EXPECTED_CODE: ${{ steps.version.outputs.code }}
+          EXPECTED_NAME: ${{ steps.version.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          APK='app/build/outputs/apk/debug/app-debug.apk'
+          APKANALYZER="$SDK_ROOT/cmdline-tools/latest/bin/apkanalyzer"
+          test -f "$APK"
+          test "$("$APKANALYZER" manifest application-id "$APK")" = 'io.github.escossio.andy'
+          test "$("$APKANALYZER" manifest version-code "$APK")" = "$EXPECTED_CODE"
+          test "$("$APKANALYZER" manifest version-name "$APK")" = "$EXPECTED_NAME"
+          mkdir -p "$RUNNER_TEMP/andy-signing-stage"
+          cp "$APK" "$RUNNER_TEMP/andy-signing-stage/app-debug.apk"
+
+      - name: Upload isolated signing input
+        uses: actions/upload-artifact@v4
+        with:
+          name: andy-signing-input-${{ github.run_id }}
+          path: ${{ runner.temp }}/andy-signing-stage/app-debug.apk
+          retention-days: 1
+          if-no-files-found: error
+
+  sign-candidate:
+    name: sign-trusted-dev-apk
+    needs: build-candidate
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$SDK_ROOT"
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" 'build-tools;36.0.0'
+          test -x "$SDK_ROOT/build-tools/36.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/36.0.0/zipalign"
+
+      - name: Download isolated candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: andy-signing-input-${{ github.run_id }}
+          path: ${{ runner.temp }}/andy-signing-input
+
+      - name: Materialize signing key
+        id: signing_key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDY_SIGNING_KEYSTORE_B64 }}
+          SIGNING_ALIAS: ${{ secrets.ANDY_SIGNING_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.ANDY_SIGNING_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDY_SIGNING_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64"
+          test -n "$SIGNING_ALIAS"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          KEYSTORE="$RUNNER_TEMP/andy-dev.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          echo "path=$KEYSTORE" >> "$GITHUB_OUTPUT"
+
+      - name: Sign candidate with stable Andy development identity
+        env:
+          KEYSTORE: ${{ steps.signing_key.outputs.path }}
+          SIGNING_ALIAS: ${{ secrets.ANDY_SIGNING_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.ANDY_SIGNING_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDY_SIGNING_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          APKSIGNER="$SDK_ROOT/build-tools/36.0.0/apksigner"
+          INPUT="$RUNNER_TEMP/andy-signing-input/app-debug.apk"
+          OUTPUT="$RUNNER_TEMP/andy-debug.apk"
+          test -f "$INPUT"
+          "$APKSIGNER" sign             --ks "$KEYSTORE"             --ks-key-alias "$SIGNING_ALIAS"             --ks-pass env:STORE_PASSWORD             --key-pass env:KEY_PASSWORD             --out "$OUTPUT"             "$INPUT"
+          test -f "$OUTPUT"
+
+      - name: Verify signed APK identity and metadata
+        env:
+          EXPECTED_CODE: ${{ needs.build-candidate.outputs.version_code }}
+          EXPECTED_NAME: ${{ needs.build-candidate.outputs.version_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          APKSIGNER="$SDK_ROOT/build-tools/36.0.0/apksigner"
+          ZIPALIGN="$SDK_ROOT/build-tools/36.0.0/zipalign"
+          APKANALYZER="$SDK_ROOT/cmdline-tools/latest/bin/apkanalyzer"
+          APK="$RUNNER_TEMP/andy-debug.apk"
+          EXPECTED_CERT='6e72dda8780cc65728b3d7183234ddf8f32c600c41f23468350b6f0dd9d37677'
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/andy-cert.txt"
+          grep -F "Signer #1 certificate SHA-256 digest: $EXPECTED_CERT" "$RUNNER_TEMP/andy-cert.txt"
+          "$ZIPALIGN" -c -P 16 4 "$APK"
+          test "$("$APKANALYZER" manifest application-id "$APK")" = 'io.github.escossio.andy'
+          test "$("$APKANALYZER" manifest version-code "$APK")" = "$EXPECTED_CODE"
+          test "$("$APKANALYZER" manifest version-name "$APK")" = "$EXPECTED_NAME"
+
+      - name: Upload installable Andy debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: andy-debug-apk-signed
+          path: ${{ runner.temp }}/andy-debug.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove temporary signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/andy-dev.keystore"
