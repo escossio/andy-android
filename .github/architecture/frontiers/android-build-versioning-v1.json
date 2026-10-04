@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-build-versioning-v1",
+  "branch": "feat/android-build-versioning-v1",
+  "allowed_paths": [
+    "app/build.gradle.kts"
+  ],
+  "required_artifacts": [
+    "app/build.gradle.kts"
+  ],
+  "forbidden_content_patterns": [
+    "ANDY_SIGNING_",
+    "signingConfigs",
+    "storePassword",
+    "keyPassword",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "secrets\\.",
+    "System\\.getenv",
+    "Runtime\\.getRuntime",
+    "ProcessBuilder",
+    "api\\.escossio\\.com",
+    "https?://"
+  ]
+}
