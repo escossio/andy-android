@@ -89,6 +89,23 @@ class PresenceReplayTest {
         assertEquals(jade.copy(clothing = PresenceClothing.PLUM), plum)
     }
 
+    @Test fun greetingHoldsTheHandInsideThePortraitPoseRange() {
+        for (age in 350L..2_050L step 17L) {
+            val frame = PresenceReplay.frame(PresenceInput(
+                elapsedMillis = 1_000L + age,
+                gestureStartedAtMillis = 1_000L,
+            ))
+            assertEquals(PresenceGesture.WAVING, frame.gesture)
+            assertTrue(frame.armDegrees in 140f..150f)
+        }
+        assertEquals(0f, PresenceReplay.frame(PresenceInput(
+            elapsedMillis = 1_000L, gestureStartedAtMillis = 1_000L,
+        )).armDegrees)
+        assertEquals(0f, PresenceReplay.frame(PresenceInput(
+            elapsedMillis = 3_400L, gestureStartedAtMillis = 1_000L,
+        )).armDegrees)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsNegativeTime() { PresenceInput(elapsedMillis = -1) }
 }

@@ -42,7 +42,8 @@ object PresenceReplay {
         }
         val arm = if (gesture == PresenceGesture.WAVING) {
             val envelope = minOf(age / 350f, (2_400L - age) / 350f, 1f)
-            envelope * (65f + 12f * sin(age.toDouble() / 150.0).toFloat())
+            // Raise the greeting hand into the portrait instead of out past its side.
+            envelope * (145f + 5f * sin(age.toDouble() / 150.0).toFloat())
         } else 0f
         return PresenceFrame(
             idle = idle,

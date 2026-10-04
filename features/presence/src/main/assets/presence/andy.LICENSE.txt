@@ -23,7 +23,7 @@ and Greeting. The app continues to drive these nodes with deterministic
 visual values; clips do not introduce an independent animation clock.
 
 Artifact SHA-256:
-2ea4c523b0996505f8cf99f782a717ead14f20a318329bd5c5d1bac261142726
+9c34943acac87903980cad3c470332cd51d429d977d6691236bf686f7d921201
 
 Validated with Khronos glTF Validator 2.0.0-dev.3.10: no errors, warnings,
 information messages or hints. Structural inspection also checked embedded
