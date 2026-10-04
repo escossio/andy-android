@@ -17,6 +17,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import io.github.escossio.andy.features.presence.PresenceClothing
+import io.github.escossio.andy.features.presence.PresenceInput
+import io.github.escossio.andy.features.presence.PresenceStage
+import io.github.escossio.andy.features.presence.presenceUsesFallback
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -289,10 +299,7 @@ private fun ConnectedHome(
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
-    VisualPresenceCard(
-        cameraPermissionGranted = cameraPermissionGranted,
-        onRequestCameraPermission = onRequestCameraPermission,
-    )
+    VisualPresenceCard()
     HeroCard()
 
     SectionTitle("Conversa")
@@ -320,42 +327,52 @@ private fun ConnectedHome(
 }
 
 @Composable
-private fun VisualPresenceCard(
-    cameraPermissionGranted: Boolean,
-    onRequestCameraPermission: () -> Unit,
-) {
+private fun VisualPresenceCard() {
+    var enabled by remember { mutableStateOf(true) }
+    var elapsed by remember { mutableStateOf(0L) }
+    var gestureStart by remember { mutableStateOf<Long?>(null) }
+    var gestureCancel by remember { mutableStateOf<Long?>(null) }
+    var clothing by remember { mutableStateOf(PresenceClothing.JADE) }
+    LaunchedEffect(enabled) {
+        if (enabled) {
+            val origin = withFrameNanos { it }
+            val offset = elapsed
+            while (true) {
+                withFrameNanos { elapsed = offset + (it - origin) / 1_000_000L }
+            }
+        }
+    }
     SurfaceCard {
-        AndyPresenceAvatar()
+        Box(Modifier.fillMaxWidth().height(300.dp)) {
+            val availability = PresenceStage(
+                input = PresenceInput(
+                    elapsedMillis = elapsed,
+                    gestureStartedAtMillis = gestureStart,
+                    gestureCancelledAtMillis = gestureCancel,
+                    clothing = clothing,
+                ),
+                enabled = enabled,
+                modifier = Modifier.fillMaxSize(),
+            )
+            if (presenceUsesFallback(enabled, availability)) AndyPresenceAvatar()
+        }
         Spacer(Modifier.height(14.dp))
-        AppText(
-            text = "Andy está aqui.",
-            size = 22,
-            weight = FontWeight.Bold,
-            color = Ink,
-        )
-        Spacer(Modifier.height(6.dp))
-        AppText(
-            text = if (cameraPermissionGranted) {
-                "Movimento local ativo. A câmera já está autorizada para a próxima camada de percepção visual."
-            } else {
-                "Ela já reage suavemente ao movimento do aparelho. Ative a câmera para preparar a percepção visual."
-            },
-            size = 14,
-            color = Muted,
-            lineHeight = 20,
-        )
-        Spacer(Modifier.height(14.dp))
-        ServiceStatus(
-            text = if (cameraPermissionGranted) {
-                "Câmera autorizada • nenhuma imagem é capturada nesta versão"
-            } else {
-                "Câmera desativada"
-            },
-            color = if (cameraPermissionGranted) Accent else Muted,
-        )
-        if (!cameraPermissionGranted) {
-            Spacer(Modifier.height(14.dp))
-            PrimaryButton("Ativar câmera", onRequestCameraPermission)
+        AppText("Andy está aqui.", 22, Ink, FontWeight.Bold)
+        AppText("Presença visual experimental • movimentos sintéticos e locais", 14, Muted)
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton(if (enabled) "Usar avatar simples" else "Experimentar palco 3D") {
+            enabled = !enabled
+        }
+        if (enabled) {
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton("Acenar") {
+                gestureStart = elapsed
+                gestureCancel = null
+            }
+            SecondaryButton("Interromper gesto") { gestureCancel = elapsed }
+            SecondaryButton("Trocar roupa") {
+                clothing = if (clothing == PresenceClothing.JADE) PresenceClothing.PLUM else PresenceClothing.JADE
+            }
         }
     }
 }

@@ -1,0 +1,15 @@
+Andy Presence Stage V1 — synthetic character
+
+This asset was created specifically for the escossio/andy-android repository
+from original synthetic geometry. It contains procedurally constructed meshes,
+materials, a named transform hierarchy and animation clips. No third-party
+character, texture, scan, photograph or real-person data was used.
+
+Distributed under the Apache License, Version 2.0, together with this project.
+The full license is available in the repository root LICENSE file.
+SPDX-License-Identifier: Apache-2.0
+
+All geometry, materials and animation data are embedded in andy.glb.
+No external resources are required. Jade and Plum are local clothing variants.
+The transform hierarchy provides torso, head, jaw, eyes, synthetic gaze and
+an arm gesture; it is a rigid stylized rig, not a scanned or skinned human.
