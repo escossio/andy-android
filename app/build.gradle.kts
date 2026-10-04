@@ -5,6 +5,14 @@ plugins {
 
 val attentionRouterBaseUrl = providers.gradleProperty("attentionRouterBaseUrl").orElse("").get()
 val googleWebClientId = providers.gradleProperty("googleWebClientId").orElse("").get()
+val githubRunNumber = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull()
+val githubVersionCode = githubRunNumber?.let { 1000 + it }
+val andyVersionCode = providers.gradleProperty("andyVersionCode").orNull?.toIntOrNull()
+    ?: githubVersionCode
+    ?: 2
+val andyVersionName = providers.gradleProperty("andyVersionName").orNull
+    ?: githubVersionCode?.let { "0.2.0-beta.$it" }
+    ?: "0.2.0-human-identity"
 
 android {
     namespace = "io.github.escossio.andy"
@@ -15,8 +23,8 @@ android {
         applicationId = "io.github.escossio.andy"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-human-identity"
+        versionCode = andyVersionCode
+        versionName = andyVersionName
         buildConfigField("String", "ATTENTION_ROUTER_BASE_URL", "\"$attentionRouterBaseUrl\"")
         buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
