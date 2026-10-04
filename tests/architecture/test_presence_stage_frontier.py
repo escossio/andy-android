@@ -1,6 +1,7 @@
 """Presence policy regression fixtures; Android candidate text is never executed."""
 import json
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -42,10 +43,58 @@ class PresenceStagePolicyTests(unittest.TestCase):
         self.assertEqual(set(self.policy['required_artifacts']), expected)
 
     def test_unchanged_integration_text_is_not_accidentally_forbidden(self):
+        self.check_integration_blobs(ROOT)
+
+    def check_integration_blobs(self, root):
         for path in self.policy['allowed_paths']:
-            if (ROOT / path).is_file():
-                with self.subTest(path=path):
-                    self.assertEqual(self.errors((ROOT / path).read_text(), path), [])
+            target = root / path
+            try:
+                mode = target.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            self.assertTrue(stat.S_ISREG(mode), 'non_regular_entry:' + path)
+            raw = target.read_bytes()
+            text = {}
+            # Match candidate_text_from_ref: NUL or invalid UTF-8 means inert data.
+            if b'\0' not in raw:
+                try:
+                    text[path] = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    pass
+            self.assertEqual(evaluate_frontier(self.policy, [path], text), [], path)
+
+    def test_allowed_glb_binary_is_inert_in_integration_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / MODULE / 'src/main/assets/presence/andy.glb'
+            target.parent.mkdir(parents=True)
+            marker = root / 'executed'
+            payload = ('from pathlib import Path\nPath(' + repr(str(marker))
+                       + ').touch()\n# CameraX\n').encode('utf-8')
+            for prefix in (b'glTF\0\xff', b'glTF\0', b'glTF\xff'):
+                with self.subTest(prefix=prefix):
+                    target.write_bytes(prefix + payload)
+                    self.check_integration_blobs(root)
+                    self.assertFalse(marker.exists())
+            # A .glb suffix alone does not exempt valid UTF-8 from text checks.
+            target.write_bytes(payload)
+            with self.assertRaisesRegex(AssertionError, 'ARCH_DEPENDENCY_FORBIDDEN'):
+                self.check_integration_blobs(root)
+
+    def test_integration_check_rejects_non_regular_glb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / MODULE / 'src/main/assets/presence/andy.glb'
+            target.parent.mkdir(parents=True)
+            source = root / 'synthetic.bin'
+            source.write_bytes(b'glTF\0\xff')
+            target.symlink_to(source)
+            with self.assertRaisesRegex(AssertionError, 'non_regular_entry'):
+                self.check_integration_blobs(root)
+            target.unlink()
+            target.mkdir()
+            with self.assertRaisesRegex(AssertionError, 'non_regular_entry'):
+                self.check_integration_blobs(root)
 
     def test_rendering_synthetic_replay_and_local_license_are_allowed(self):
         for text in (
@@ -155,6 +204,7 @@ class PresenceStagePolicyTests(unittest.TestCase):
                 target = repo / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text('synthetic fixture\n')
+            (repo / MODULE / 'src/main/assets/presence/andy.glb').write_bytes(b'glTF\0\xffCameraX')
             complete = commit()
             (repo / SOURCE / 'PresenceStage.kt').unlink()
             missing = commit()
