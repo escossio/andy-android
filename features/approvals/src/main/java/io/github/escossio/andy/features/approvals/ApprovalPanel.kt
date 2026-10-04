@@ -161,13 +161,13 @@ private fun ApprovalRequestCard(
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            text = "Destino: \${approval.target}",
+            text = "Destino: ${approval.target}",
             size = 12,
             color = Muted,
             lineHeight = 17,
         )
         Text(
-            text = "Válida até \${EXPIRY_FORMAT.format(approval.expiresAt)}",
+            text = "Válida até ${EXPIRY_FORMAT.format(approval.expiresAt)}",
             size = 12,
             color = Muted,
             lineHeight = 17,
