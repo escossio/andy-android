@@ -37,10 +37,12 @@ fun CommandPanel(
     microphoneEnabled: Boolean,
     onSend: (String) -> Unit,
     onRefresh: () -> Unit,
+    onExport: (CommandExportPayload) -> Unit,
     onMicrophone: () -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
     val commands = commandsOf(state)
+    val exportPayload = commandExportPayload(state)
 
     Column(
         modifier = Modifier
@@ -91,7 +93,18 @@ fun CommandPanel(
         )
 
         if (commands.isNotEmpty()) {
-            TextButton("Atualizar conversa", onRefresh)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton("Atualizar conversa", onRefresh)
+                if (exportPayload != null) {
+                    TextButton("Exportar") {
+                        onExport(exportPayload)
+                    }
+                }
+            }
         }
     }
 }
