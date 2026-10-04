@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-command-export-v1",
+  "branch": "feat/android-command-export-v1",
+  "allowed_paths": [
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandPanel.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandExport.kt",
+    "features/command/src/test/java/io/github/escossio/andy/features/command/CommandExportTest.kt"
+  ],
+  "required_artifacts": [
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandExport.kt",
+    "features/command/src/main/java/io/github/escossio/andy/features/command/CommandPanel.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "firebase",
+    "androidx\\.work",
+    "HttpURLConnection",
+    "java\\.net\\.",
+    "gmail\\.send",
+    "gmail\\.modify",
+    "GMAIL_SEND",
+    "GMAIL_MODIFY",
+    "AuthorizationClient",
+    "FileProvider",
+    "WRITE_EXTERNAL_STORAGE",
+    "READ_EXTERNAL_STORAGE",
+    "secrets\\."
+  ]
+}
