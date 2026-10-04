@@ -102,6 +102,7 @@ fun PresenceStage(
                                 try {
                                     super.destroy()
                                 } finally {
+                                    isDestroyed = true
                                     resources.release()
                                 }
                             }
