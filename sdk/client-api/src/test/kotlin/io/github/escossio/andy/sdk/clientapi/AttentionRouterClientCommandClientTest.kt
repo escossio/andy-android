@@ -1,5 +1,6 @@
 package io.github.escossio.andy.sdk.clientapi
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -10,10 +11,21 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.time.Instant
 
 class AttentionRouterClientCommandClientTest {
+    @Test
+    fun defaultHttpClientBudgetExceedsBackendSemanticWindow() {
+        val http = defaultClientCommandHttpClient()
+
+        assertEquals(10_000, http.connectTimeoutMillis)
+        assertEquals(10_000, http.writeTimeoutMillis)
+        assertEquals(45_000, http.readTimeoutMillis)
+        assertEquals(50_000, http.callTimeoutMillis)
+    }
+
     private val session = ClientSessionCredential(
         token = "cst_" + "a".repeat(43),
         sessionId = "csn_" + "b".repeat(20),
@@ -119,6 +131,26 @@ class AttentionRouterClientCommandClientTest {
             ),
             client.submitText(session, "req_1", "pare"),
         )
+    }
+
+    @Test
+    fun cancellationIsNotReportedAsNetworkFailure() = runBlocking {
+        val http = OkHttpClient.Builder()
+            .addInterceptor {
+                throw CancellationException("synthetic cancellation")
+            }
+            .build()
+        val client = AttentionRouterClientCommandClient(
+            "https://synthetic.invalid",
+            http,
+        )
+
+        try {
+            client.submitText(session, "req_cancel", "teste")
+            fail("CancellationException must propagate")
+        } catch (_: CancellationException) {
+            // Expected: structured coroutine cancellation is not a network failure.
+        }
     }
 
     @Test
