@@ -239,6 +239,113 @@ class OnboardingCoordinator(
         }
     }
 
+    suspend fun switchActiveTenant(targetTenantId: String): Boolean =
+        sessionMutex.withLock sessionLock@{
+            val target = targetTenantId.trim()
+            if (target.isEmpty() || target.length > 64) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "INVALID_TARGET",
+                )
+                return@sessionLock false
+            }
+
+            val previousState =
+                sessionMutable.value as? ClientSessionState.Connected
+            val previousSession = clientSession
+            if (previousState == null || previousSession == null) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "NOT_CONNECTED",
+                )
+                return@sessionLock false
+            }
+            if (
+                previousState.bootstrap.activeTenantId != previousSession.tenantId ||
+                previousState.bootstrap.humanIdentityId != previousSession.humanIdentityId ||
+                previousState.bootstrap.device.deviceId != previousSession.deviceId
+            ) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "CURRENT_AUTHORITY_MISMATCH",
+                )
+                return@sessionLock false
+            }
+            if (
+                previousState.bootstrap.memberships.none {
+                    it.tenantId == target
+                }
+            ) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "TARGET_NOT_MEMBER",
+                )
+                return@sessionLock false
+            }
+            if (target == previousSession.tenantId) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "NOOP",
+                )
+                return@sessionLock true
+            }
+
+            gmailMutex.withLock gmailLock@{
+                val previousGmailState = gmailMutable.value
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "STARTED",
+                )
+                establishFreshSession(
+                    automatic = false,
+                    requestedTenantIdOverride = target,
+                    trigger = SessionRefreshTrigger.TENANT_SWITCH,
+                )
+
+                val nextState =
+                    sessionMutable.value as? ClientSessionState.Connected
+                val nextSession = clientSession
+                val switched = (
+                    nextState != null &&
+                        nextSession != null &&
+                        nextSession.tenantId == target &&
+                        nextState.bootstrap.activeTenantId == target &&
+                        nextSession.humanIdentityId ==
+                        previousSession.humanIdentityId &&
+                        nextState.bootstrap.humanIdentityId ==
+                        previousSession.humanIdentityId &&
+                        nextSession.deviceId == previousSession.deviceId &&
+                        nextState.bootstrap.device.deviceId ==
+                        previousSession.deviceId
+                    )
+
+                if (!switched) {
+                    clientSession = previousSession
+                    transitionSession(
+                        previousState,
+                        "TENANT_SWITCH_ROLLBACK",
+                    )
+                    gmailMutable.value = previousGmailState
+                    emitSessionEvent(
+                        "CLIENT_SESSION_TENANT_SWITCH",
+                        "result" to "ROLLED_BACK",
+                    )
+                    return@gmailLock false
+                }
+
+                gmailMutable.value = GmailConnectionState.Idle
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "SUCCESS",
+                )
+                true
+            }
+        }
+
     fun beginLocationAcquisition() {
         if (sessionMutable.value is ClientSessionState.Connected) {
             locationMutable.value = ClientLocationState.Acquiring
@@ -662,14 +769,16 @@ class OnboardingCoordinator(
         val established =
             (bootstrapMutable.value as? DeviceBootstrapState.Established)?.authority
         if (
-            established != null &&
             (
-                established.humanIdentityId != issued.humanIdentityId ||
-                    established.device.deviceId != issued.deviceId ||
+                requestedTenantId != null &&
+                    requestedTenantId != issued.tenantId
+            ) ||
+            (
+                established != null &&
                     (
-                        established.initialTenantId != null &&
-                            established.initialTenantId != issued.tenantId
-                )
+                        established.humanIdentityId != issued.humanIdentityId ||
+                            established.device.deviceId != issued.deviceId
+                    )
             )
         ) {
             clientSession = previousSession
@@ -988,6 +1097,7 @@ class OnboardingCoordinator(
         EXPIRED,
         EXPIRING,
         REJECTED,
+        TENANT_SWITCH,
     }
 }
 
