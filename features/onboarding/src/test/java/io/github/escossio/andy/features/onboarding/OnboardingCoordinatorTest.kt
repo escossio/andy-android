@@ -9,6 +9,8 @@ import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizat
 import io.github.escossio.andy.integrations.googleauthorization.GoogleServerAuthorizationCode
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientTenantDirectory
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedTenantDirectoryResult
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
 import io.github.escossio.andy.sdk.clientapi.ClientSessionChallenge
 import io.github.escossio.andy.sdk.clientapi.ClientSessionChallengeResult
@@ -18,6 +20,7 @@ import io.github.escossio.andy.sdk.clientapi.ClientSessionCredential
 import io.github.escossio.andy.sdk.clientapi.ClientSessionErrorCode
 import io.github.escossio.andy.sdk.clientapi.ClientSessionStore
 import io.github.escossio.andy.sdk.clientapi.ClientDevice
+import io.github.escossio.andy.sdk.clientapi.ClientTenantDirectoryMembership
 import io.github.escossio.andy.sdk.clientapi.ClientTenantMembership
 import io.github.escossio.andy.sdk.clientapi.ClientTenantRole
 import io.github.escossio.andy.sdk.clientapi.ContinuationResult
@@ -586,6 +589,107 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
+    fun tenantDirectoryPublishesOnlyExactAuthenticatedMemberships() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val session = FakeSessionClient(
+            bootstrap = AuthenticatedBootstrapResult.Success(
+                authenticatedBootstrap(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = memberships,
+                ),
+            ),
+            directory = AuthenticatedTenantDirectoryResult.Success(
+                AuthenticatedClientTenantDirectory(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = listOf(
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_source",
+                            tenantId = SOURCE_TENANT,
+                            displayName = "Personal",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_target",
+                            tenantId = TARGET_TENANT,
+                            displayName = "Leonardo",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = FakeSessionStore(
+                sessionCredential(tenantId = SOURCE_TENANT),
+            ),
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshTenantDirectory()
+
+        val directory =
+            coordinator.tenantDirectoryState.value as TenantDirectoryState.Available
+        assertEquals(SOURCE_TENANT, directory.activeTenantId)
+        assertEquals(listOf("Personal", "Leonardo"), directory.memberships.map { it.displayName })
+        assertEquals(1, session.directoryCalls)
+    }
+
+    @Test
+    fun tenantDirectoryAuthorityMismatchDoesNotInvalidateConnectedSession() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val session = FakeSessionClient(
+            bootstrap = AuthenticatedBootstrapResult.Success(
+                authenticatedBootstrap(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = memberships,
+                ),
+            ),
+            directory = AuthenticatedTenantDirectoryResult.Success(
+                AuthenticatedClientTenantDirectory(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = listOf(
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_source",
+                            tenantId = SOURCE_TENANT,
+                            displayName = "Personal",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_wrong",
+                            tenantId = TARGET_TENANT,
+                            displayName = "Leonardo",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = FakeSessionStore(
+                sessionCredential(tenantId = SOURCE_TENANT),
+            ),
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshTenantDirectory()
+
+        assertSame(
+            TenantDirectoryState.Unavailable,
+            coordinator.tenantDirectoryState.value,
+        )
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
     fun explicitTenantSwitchUsesFreshDeviceSessionAndResetsGmailState() = runBlocking {
         val memberships = dualTenantMemberships()
         val store = FakeSessionStore(
@@ -1095,10 +1199,15 @@ class OnboardingCoordinatorTest {
             ClientSessionCompleteResult.Success(sessionCredential()),
         private val bootstrap: AuthenticatedBootstrapResult =
             AuthenticatedBootstrapResult.Success(authenticatedBootstrap()),
+        private val directory: AuthenticatedTenantDirectoryResult =
+            AuthenticatedTenantDirectoryResult.Failure(
+                ClientSessionErrorCode.CLIENT_SESSION_UNAVAILABLE,
+            ),
     ) : ClientSessionClient {
         var startCalls = 0
         var completeCalls = 0
         var bootstrapCalls = 0
+        var directoryCalls = 0
         val requestedTenantIds = mutableListOf<String?>()
 
         override suspend fun start(
@@ -1123,6 +1232,13 @@ class OnboardingCoordinatorTest {
         ): AuthenticatedBootstrapResult {
             bootstrapCalls++
             return bootstrap
+        }
+
+        override suspend fun tenantDirectory(
+            session: ClientSessionCredential,
+        ): AuthenticatedTenantDirectoryResult {
+            directoryCalls++
+            return directory
         }
     }
 
