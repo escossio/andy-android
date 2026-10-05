@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-dual-membership-context-toggle-v1",
+  "branch": "feat/dual-membership-context-toggle-v1",
+  "allowed_paths": [
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingScreenTest.kt"
+  ],
+  "required_artifacts": [
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt"
+  ],
+  "forbidden_content_patterns": [
+    "whatsapp",
+    "wamid",
+    "meta_whatsapp",
+    "HttpURLConnection",
+    "java\\.net\\.",
+    "firebase",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "BuildConfig\\.[A-Za-z0-9_]*TENANT"
+  ]
+}
