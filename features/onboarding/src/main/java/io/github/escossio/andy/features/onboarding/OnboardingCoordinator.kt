@@ -774,6 +774,13 @@ class OnboardingCoordinator(
                     requestedTenantId != issued.tenantId
             ) ||
             (
+                previousSession != null &&
+                    (
+                        previousSession.humanIdentityId != issued.humanIdentityId ||
+                            previousSession.deviceId != issued.deviceId
+                    )
+            ) ||
+            (
                 established != null &&
                     (
                         established.humanIdentityId != issued.humanIdentityId ||
