@@ -93,6 +93,7 @@ private fun AndyBootstrap(
     val sessionState by coordinator.sessionState.collectAsState()
     val locationState by coordinator.locationState.collectAsState()
     val gmailState by coordinator.gmailState.collectAsState()
+    val tenantDirectoryState by coordinator.tenantDirectoryState.collectAsState()
     val approvalState by approvalCoordinator.state.collectAsState()
     val commandState by commandCoordinator.state.collectAsState()
     val context = LocalContext.current
@@ -123,6 +124,7 @@ private fun AndyBootstrap(
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
+            coordinator.refreshTenantDirectory()
             coordinator.refreshGmailConnection()
             approvalCoordinator.refresh()
             commandCoordinator.refresh()
@@ -152,6 +154,7 @@ private fun AndyBootstrap(
             sessionState = sessionState,
             locationState = locationState,
             gmailState = gmailState,
+            tenantDirectoryState = tenantDirectoryState,
             cameraPermissionGranted = cameraPermissionGranted,
             onRequestCameraPermission = {
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -184,6 +187,9 @@ private fun AndyBootstrap(
             },
             onDisconnectGmail = {
                 scope.launch { coordinator.disconnectGmail() }
+            },
+            onSwitchTenant = { tenantId ->
+                scope.launch { coordinator.switchActiveTenant(tenantId) }
             },
             commandContent = {
                 CommandPanel(
