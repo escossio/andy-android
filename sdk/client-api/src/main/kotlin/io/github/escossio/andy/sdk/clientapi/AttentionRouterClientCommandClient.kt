@@ -1,5 +1,6 @@
 package io.github.escossio.andy.sdk.clientapi
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -15,6 +16,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 data class ClientCommand(
     val commandId: String,
@@ -65,9 +67,18 @@ interface ClientCommandClient {
     ): ClientCommandListResult
 }
 
+internal fun defaultClientCommandHttpClient(): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .callTimeout(50, TimeUnit.SECONDS)
+        .build()
+
+
 class AttentionRouterClientCommandClient(
     baseUrl: String,
-    private val http: OkHttpClient = OkHttpClient(),
+    private val http: OkHttpClient = defaultClientCommandHttpClient(),
 ) : ClientCommandClient {
     private val root = baseUrl.trimEnd('/')
 
@@ -104,6 +115,8 @@ class AttentionRouterClientCommandClient(
                     }
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             ClientCommandResult.Failure(ClientCommandErrorCode.NETWORK_FAILURE)
         }
@@ -133,6 +146,8 @@ class AttentionRouterClientCommandClient(
                     }
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             ClientCommandListResult.Failure(ClientCommandErrorCode.NETWORK_FAILURE)
         }
