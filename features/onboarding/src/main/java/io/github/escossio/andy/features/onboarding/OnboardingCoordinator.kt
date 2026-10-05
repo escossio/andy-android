@@ -9,6 +9,8 @@ import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialRes
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedTenantDirectoryResult
+import io.github.escossio.andy.sdk.clientapi.ClientTenantDirectoryMembership
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
 import io.github.escossio.andy.sdk.clientapi.ClientLocationClient
 import io.github.escossio.andy.sdk.clientapi.ClientLocationErrorCode
@@ -49,6 +51,17 @@ data class OnboardingConfiguration(
     val canonicalDeviceName: String,
 )
 
+sealed interface TenantDirectoryState {
+    data object Idle : TenantDirectoryState
+    data object Loading : TenantDirectoryState
+    data object Unavailable : TenantDirectoryState
+
+    data class Available(
+        val activeTenantId: String,
+        val memberships: List<ClientTenantDirectoryMembership>,
+    ) : TenantDirectoryState
+}
+
 class OnboardingCoordinator(
     ready: Boolean,
     private val config: OnboardingConfiguration,
@@ -86,12 +99,18 @@ class OnboardingCoordinator(
         MutableStateFlow<GmailConnectionState>(GmailConnectionState.Idle)
     val gmailState: StateFlow<GmailConnectionState> = gmailMutable.asStateFlow()
 
+    private val tenantDirectoryMutable =
+        MutableStateFlow<TenantDirectoryState>(TenantDirectoryState.Idle)
+    val tenantDirectoryState: StateFlow<TenantDirectoryState> =
+        tenantDirectoryMutable.asStateFlow()
+
     private var continuationGrant: HumanAuthContinuationGrant? = null
     private var validatedIdentity: HumanIdentityReference? = null
     private var clientSession: ClientSessionCredential? = null
     private val deviceReady = ready
     private val sessionMutex = Mutex()
     private val gmailMutex = Mutex()
+    private val tenantDirectoryMutex = Mutex()
 
     fun takeContinuationGrant(): HumanAuthContinuationGrant? {
         val grant = continuationGrant
@@ -177,6 +196,7 @@ class OnboardingCoordinator(
             bootstrapMutable.value = DeviceBootstrapState.Idle
             transitionSession(ClientSessionState.Idle, "GOOGLE_REAUTH")
             gmailMutable.value = GmailConnectionState.Idle
+            tenantDirectoryMutable.value = TenantDirectoryState.Idle
             true
         }
         if (!reset) return
@@ -345,6 +365,80 @@ class OnboardingCoordinator(
                 true
             }
         }
+
+    suspend fun refreshTenantDirectory() {
+        tenantDirectoryMutex.withLock {
+            val connected =
+                sessionMutable.value as? ClientSessionState.Connected
+            val session = clientSession
+            if (
+                connected == null ||
+                session == null ||
+                connected.bootstrap.activeTenantId != session.tenantId ||
+                connected.bootstrap.humanIdentityId != session.humanIdentityId ||
+                connected.bootstrap.device.deviceId != session.deviceId
+            ) {
+                tenantDirectoryMutable.value = TenantDirectoryState.Idle
+                return@withLock
+            }
+
+            tenantDirectoryMutable.value = TenantDirectoryState.Loading
+            val directory = when (
+                val result = sessionClient.tenantDirectory(session)
+            ) {
+                is AuthenticatedTenantDirectoryResult.Success ->
+                    result.directory
+                is AuthenticatedTenantDirectoryResult.Failure -> {
+                    tenantDirectoryMutable.value =
+                        TenantDirectoryState.Unavailable
+                    emitSessionEvent(
+                        "CLIENT_TENANT_DIRECTORY",
+                        "result" to "UNAVAILABLE",
+                        "category" to result.error.name,
+                    )
+                    return@withLock
+                }
+            }
+
+            val bootstrapMemberships =
+                connected.bootstrap.memberships.associateBy { it.membershipId }
+            val exactAuthority = (
+                directory.activeTenantId == session.tenantId &&
+                    directory.memberships.size ==
+                    connected.bootstrap.memberships.size &&
+                    directory.memberships.all { option ->
+                        val membership =
+                            bootstrapMemberships[option.membershipId]
+                        membership != null &&
+                            membership.tenantId == option.tenantId &&
+                            membership.role == option.role
+                    } &&
+                    directory.memberships.count {
+                        it.tenantId == directory.activeTenantId
+                    } == 1
+                )
+
+            if (!exactAuthority) {
+                tenantDirectoryMutable.value =
+                    TenantDirectoryState.Unavailable
+                emitSessionEvent(
+                    "CLIENT_TENANT_DIRECTORY",
+                    "result" to "AUTHORITY_MISMATCH",
+                )
+                return@withLock
+            }
+
+            tenantDirectoryMutable.value = TenantDirectoryState.Available(
+                activeTenantId = directory.activeTenantId,
+                memberships = directory.memberships,
+            )
+            emitSessionEvent(
+                "CLIENT_TENANT_DIRECTORY",
+                "result" to "SUCCESS",
+                "count" to directory.memberships.size.toString(),
+            )
+        }
+    }
 
     fun beginLocationAcquisition() {
         if (sessionMutable.value is ClientSessionState.Connected) {
