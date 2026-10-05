@@ -60,6 +60,7 @@ fun OnboardingScreen(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    onSwitchContext: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -85,6 +86,7 @@ fun OnboardingScreen(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                onSwitchContext = onSwitchContext,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
             )
@@ -238,6 +240,15 @@ private fun BootstrapContent(
     }
 }
 
+internal fun dualMembershipContextTarget(
+    activeTenantId: String,
+    membershipTenantIds: List<String>,
+): String? {
+    if (membershipTenantIds.size != 2) return null
+    if (membershipTenantIds.count { it == activeTenantId } != 1) return null
+    return membershipTenantIds.singleOrNull { it != activeTenantId }
+}
+
 @Composable
 private fun SessionContent(
     sessionState: ClientSessionState,
@@ -250,6 +261,7 @@ private fun SessionContent(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    onSwitchContext: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -270,7 +282,11 @@ private fun SessionContent(
                 title = "Carregando sua Andy",
                 body = "Sincronizando o estado autenticado deste dispositivo.",
             )
-        is ClientSessionState.Connected ->
+        is ClientSessionState.Connected -> {
+            val targetTenantId = dualMembershipContextTarget(
+                activeTenantId = sessionState.bootstrap.activeTenantId,
+                membershipTenantIds = sessionState.bootstrap.memberships.map { it.tenantId },
+            )
             ConnectedHome(
                 locationState = locationState,
                 gmailState = gmailState,
@@ -279,9 +295,13 @@ private fun SessionContent(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                onSwitchContext = targetTenantId?.let { target ->
+                    { onSwitchContext(target) }
+                },
                 commandContent = commandContent,
                 approvalContent = approvalContent,
             )
+        }
         is ClientSessionState.Failure -> {
             MessageCard(
                 title = "A conexão segura falhou",
@@ -303,10 +323,14 @@ private fun ConnectedHome(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    onSwitchContext: (() -> Unit)?,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
     VisualPresence()
+    if (onSwitchContext != null) {
+        SecondaryButton("Trocar contexto", onSwitchContext)
+    }
     commandContent()
 
     SectionTitle("Seu painel")

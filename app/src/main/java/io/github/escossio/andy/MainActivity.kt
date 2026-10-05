@@ -185,6 +185,9 @@ private fun AndyBootstrap(
             onDisconnectGmail = {
                 scope.launch { coordinator.disconnectGmail() }
             },
+            onSwitchContext = { targetTenantId ->
+                scope.launch { coordinator.switchActiveTenant(targetTenantId) }
+            },
             commandContent = {
                 CommandPanel(
                     state = commandState,
