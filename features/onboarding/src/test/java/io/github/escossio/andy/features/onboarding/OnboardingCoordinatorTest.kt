@@ -757,6 +757,66 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
+    fun explicitTenantSwitchRejectsServerSessionForDifferentHumanBeforePersistence() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(
+            memberships = memberships,
+            issuedHumanIdentityOverride = OTHER_HUMAN_ID,
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        val savesBeforeSwitch = store.saveCalls
+        val bootstrapsBeforeSwitch = session.bootstrapCalls
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertSame(original, store.current)
+        assertEquals(savesBeforeSwitch, store.saveCalls)
+        assertEquals(bootstrapsBeforeSwitch, session.bootstrapCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
+    fun explicitTenantSwitchRejectsServerSessionForDifferentDeviceBeforePersistence() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(
+            memberships = memberships,
+            issuedDeviceIdOverride = OTHER_DEVICE_ID,
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        val savesBeforeSwitch = store.saveCalls
+        val bootstrapsBeforeSwitch = session.bootstrapCalls
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertSame(original, store.current)
+        assertEquals(savesBeforeSwitch, store.saveCalls)
+        assertEquals(bootstrapsBeforeSwitch, session.bootstrapCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
     fun gmailConnectUsesOneTimeServerCodeAfterClientSession() = runBlocking {
         val gmail = FakeGmailClient()
         val authorization = FakeGmailAuthorization()
@@ -1238,6 +1298,8 @@ class OnboardingCoordinatorTest {
         private val memberships: List<ClientTenantMembership>,
         private val startFailure: ClientSessionErrorCode? = null,
         private val issuedTenantOverride: String? = null,
+        private val issuedHumanIdentityOverride: String? = null,
+        private val issuedDeviceIdOverride: String? = null,
     ) : ClientSessionClient {
         var startCalls = 0
         var completeCalls = 0
@@ -1268,7 +1330,11 @@ class OnboardingCoordinatorTest {
                     ?: requestedTenantId
                     ?: SOURCE_TENANT
             return ClientSessionCompleteResult.Success(
-                sessionCredential(tenantId = tenantId),
+                sessionCredential(
+                    tenantId = tenantId,
+                    humanIdentityId = issuedHumanIdentityOverride ?: HUMAN_ID,
+                    deviceId = issuedDeviceIdOverride ?: DEVICE_ID,
+                ),
             )
         }
 
@@ -1314,6 +1380,8 @@ class OnboardingCoordinatorTest {
         const val GRANT_TOKEN = "hcg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val SESSION_TOKEN = "cst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val DEVICE_ID = "cdev_exampledevice12345678901"
+        const val OTHER_HUMAN_ID = "hid_otheropaqueidentity123"
+        const val OTHER_DEVICE_ID = "cdev_otherdevice12345678901"
         const val SOURCE_TENANT = "tnt_synthetic"
         const val TARGET_TENANT = "tnt_target"
 
@@ -1358,12 +1426,14 @@ class OnboardingCoordinatorTest {
         fun sessionCredential(
             expiresAt: Instant = Instant.parse("2030-01-01T00:15:00Z"),
             tenantId: String = SOURCE_TENANT,
+            humanIdentityId: String = HUMAN_ID,
+            deviceId: String = DEVICE_ID,
         ) = ClientSessionCredential(
             token = SESSION_TOKEN,
             sessionId = "csn_examplesession12345678901",
             expiresAt = expiresAt,
-            humanIdentityId = HUMAN_ID,
-            deviceId = DEVICE_ID,
+            humanIdentityId = humanIdentityId,
+            deviceId = deviceId,
             tenantId = tenantId,
         )
 
