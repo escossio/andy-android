@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.escossio.andy.core.humanidentity.HumanIdentityState
+import io.github.escossio.andy.sdk.clientapi.ClientTenantRole
 
 @Composable
 fun OnboardingScreen(
@@ -50,6 +51,7 @@ fun OnboardingScreen(
     sessionState: ClientSessionState,
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
+    tenantDirectoryState: TenantDirectoryState,
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onContinue: () -> Unit,
@@ -60,6 +62,7 @@ fun OnboardingScreen(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    onSwitchTenant: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -78,6 +81,7 @@ fun OnboardingScreen(
                 sessionState = sessionState,
                 locationState = locationState,
                 gmailState = gmailState,
+                tenantDirectoryState = tenantDirectoryState,
                 cameraPermissionGranted = cameraPermissionGranted,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onRetrySession = onRetrySession,
@@ -85,6 +89,7 @@ fun OnboardingScreen(
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                onSwitchTenant = onSwitchTenant,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
             )
@@ -243,6 +248,7 @@ private fun SessionContent(
     sessionState: ClientSessionState,
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
+    tenantDirectoryState: TenantDirectoryState,
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onRetrySession: () -> Unit,
@@ -250,6 +256,7 @@ private fun SessionContent(
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    onSwitchTenant: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -274,11 +281,13 @@ private fun SessionContent(
             ConnectedHome(
                 locationState = locationState,
                 gmailState = gmailState,
+                tenantDirectoryState = tenantDirectoryState,
                 cameraPermissionGranted = cameraPermissionGranted,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
+                onSwitchTenant = onSwitchTenant,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
             )
@@ -298,11 +307,13 @@ private fun SessionContent(
 private fun ConnectedHome(
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
+    tenantDirectoryState: TenantDirectoryState,
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
+    onSwitchTenant: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -311,11 +322,9 @@ private fun ConnectedHome(
 
     SectionTitle("Seu painel")
     approvalContent()
-    FeatureTile(
-        title = "Contexto",
-        body = "Preferências, memória e informações pessoais.",
-        badge = "EM BREVE",
-        modifier = Modifier.fillMaxWidth(),
+    TenantContextCard(
+        state = tenantDirectoryState,
+        onSwitchTenant = onSwitchTenant,
     )
 
     SectionTitle("Serviços")
@@ -406,6 +415,73 @@ private fun VisualPresence() {
             }
         }
     }
+}
+
+@Composable
+private fun TenantContextCard(
+    state: TenantDirectoryState,
+    onSwitchTenant: (String) -> Unit,
+) {
+    val available = state as? TenantDirectoryState.Available
+    if (available == null || available.memberships.size <= 1) {
+        FeatureTile(
+            title = "Contexto",
+            body = "Preferências, memória e informações pessoais.",
+            badge = "EM BREVE",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        return
+    }
+
+    val active = available.memberships.firstOrNull {
+        it.tenantId == available.activeTenantId
+    }
+    if (active == null) {
+        FeatureTile(
+            title = "Contexto",
+            body = "Preferências, memória e informações pessoais.",
+            badge = "EM BREVE",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        return
+    }
+
+    SurfaceCard {
+        AppText(
+            text = "Contexto",
+            size = 19,
+            weight = FontWeight.SemiBold,
+            color = Ink,
+        )
+        Spacer(Modifier.height(6.dp))
+        ServiceStatus(
+            text = "${active.displayName} · ${active.role.displayLabel()}",
+            color = Accent,
+        )
+        Spacer(Modifier.height(14.dp))
+        available.memberships
+            .filter { it.tenantId != available.activeTenantId }
+            .forEach { option ->
+                AppText(
+                    text = "${option.displayName} · ${option.role.displayLabel()}",
+                    size = 13,
+                    color = Muted,
+                    lineHeight = 18,
+                )
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
+                    text = "Usar ${option.displayName}",
+                    onClick = { onSwitchTenant(option.tenantId) },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+    }
+}
+
+private fun ClientTenantRole.displayLabel() = when (this) {
+    ClientTenantRole.OWNER -> "Proprietário"
+    ClientTenantRole.ADMIN -> "Administrador"
+    ClientTenantRole.MEMBER -> "Membro"
 }
 
 @Composable

@@ -109,6 +109,79 @@ class AttentionRouterClientSessionClientTest {
     }
 
     @Test
+    fun authenticatedTenantDirectoryUsesBearerAndParsesBoundedDisplayMetadata() = runBlocking {
+        var observedPath = ""
+        var observedBearer = ""
+        val transport = object : ClientSessionTransport {
+            override suspend fun post(
+                path: String,
+                body: String,
+            ) = failTransport()
+
+            override suspend fun get(
+                path: String,
+                bearerToken: String,
+            ): ClientSessionTransportResponse {
+                observedPath = path
+                observedBearer = bearerToken
+                return ClientSessionTransportResponse(
+                    200,
+                    tenantDirectoryJson(),
+                )
+            }
+        }
+
+        val result = client(transport).tenantDirectory(credential())
+
+        assertEquals("/api/v1/client/tenants", observedPath)
+        assertEquals(SESSION_TOKEN, observedBearer)
+        assertTrue(result is AuthenticatedTenantDirectoryResult.Success)
+        val directory =
+            (result as AuthenticatedTenantDirectoryResult.Success).directory
+        assertEquals("tnt_synthetic", directory.activeTenantId)
+        assertEquals(2, directory.memberships.size)
+        assertEquals("ctm_synthetic", directory.memberships[0].membershipId)
+        assertEquals("Personal", directory.memberships[0].displayName)
+        assertEquals(ClientTenantRole.OWNER, directory.memberships[0].role)
+        assertFalse(directory.toString().contains(SESSION_TOKEN))
+    }
+
+    @Test
+    fun authenticatedTenantDirectoryFailsClosedOnAuthorityOrShapeDrift() = runBlocking {
+        val malformed = listOf(
+            tenantDirectoryJson().replace(
+                "\"active_tenant_id\":\"tnt_synthetic\"",
+                "\"active_tenant_id\":\"tnt_missing\"",
+            ),
+            tenantDirectoryJson().replace(
+                "\"display_name\":\"Personal\"",
+                "\"display_name\":\" Personal \"",
+            ),
+            tenantDirectoryJson().replaceFirst(
+                "\"membership_id\":\"ctm_target\"",
+                "\"membership_id\":\"ctm_synthetic\"",
+            ),
+            tenantDirectoryJson().replace(
+                "\"status\":\"ACTIVE\"",
+                "\"status\":\"SUSPENDED\"",
+            ),
+        )
+
+        for (body in malformed) {
+            val result = client(
+                getResponse = ClientSessionTransportResponse(200, body),
+            ).tenantDirectory(credential())
+
+            assertEquals(
+                AuthenticatedTenantDirectoryResult.Failure(
+                    ClientSessionErrorCode.UNEXPECTED_RESPONSE,
+                ),
+                result,
+            )
+        }
+    }
+
+    @Test
     fun malformedSessionResponsesFailClosed() = runBlocking {
         val malformed = listOf(
             sessionJson().replace("Bearer", "Basic"),
@@ -268,6 +341,9 @@ class AttentionRouterClientSessionClientTest {
 
     private fun bootstrapJson() =
         """{"contract_version":"1","human_identity_id":"$HUMAN_ID","active_tenant_id":"tnt_synthetic","memberships":[{"membership_id":"ctm_synthetic","tenant_id":"tnt_synthetic","role":"OWNER","status":"ACTIVE"}],"device":{"device_id":"$DEVICE_ID","public_key_fingerprint":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","canonical_name":"Synthetic Android","platform":"ANDROID","roles":["CLIENT","CAPABILITY_NODE"],"status":"ACTIVE"},"session_expires_at":"2030-01-01T00:15:00Z","server_time":"2030-01-01T00:01:00Z"}"""
+
+    private fun tenantDirectoryJson() =
+        """{"contract_version":"1","active_tenant_id":"tnt_synthetic","memberships":[{"membership_id":"ctm_synthetic","tenant_id":"tnt_synthetic","display_name":"Personal","role":"OWNER","status":"ACTIVE"},{"membership_id":"ctm_target","tenant_id":"tnt_target","display_name":"Leonardo","role":"OWNER","status":"ACTIVE"}]}"""
 
     private fun failTransport(): ClientSessionTransportResponse =
         throw AssertionError("unexpected transport call")
