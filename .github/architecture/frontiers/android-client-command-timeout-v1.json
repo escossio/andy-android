@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-client-command-timeout-v1",
+  "branch": "feat/client-command-timeout-v1",
+  "allowed_paths": [
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClientTest.kt"
+  ],
+  "required_artifacts": [
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterClientCommandClientTest.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "firebase",
+    "androidx\\.work",
+    "HttpURLConnection",
+    "java\\.net\\.",
+    "whatsapp",
+    "wamid",
+    "meta_whatsapp",
+    "postgres",
+    "docker"
+  ]
+}
