@@ -53,7 +53,7 @@ class SignedDebugWorkflowPolicyTests(unittest.TestCase):
         ):
             self.assertIn(secret, sign)
         self.assertIn(
-            "6e72dda8780cc65728b3d7183234ddf8f32c600c41f23468350b6f0dd9d37677",
+            "dab9de67da84d79560d817b4b6f2bd4abbf27641cc596b30f0510d331cdf5e3f",
             sign,
         )
         self.assertIn("apksigner", sign)
