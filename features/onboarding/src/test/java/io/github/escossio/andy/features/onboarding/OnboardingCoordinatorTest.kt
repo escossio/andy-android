@@ -9,6 +9,8 @@ import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizat
 import io.github.escossio.andy.integrations.googleauthorization.GoogleServerAuthorizationCode
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientTenantDirectory
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedTenantDirectoryResult
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
 import io.github.escossio.andy.sdk.clientapi.ClientSessionChallenge
 import io.github.escossio.andy.sdk.clientapi.ClientSessionChallengeResult
@@ -18,6 +20,7 @@ import io.github.escossio.andy.sdk.clientapi.ClientSessionCredential
 import io.github.escossio.andy.sdk.clientapi.ClientSessionErrorCode
 import io.github.escossio.andy.sdk.clientapi.ClientSessionStore
 import io.github.escossio.andy.sdk.clientapi.ClientDevice
+import io.github.escossio.andy.sdk.clientapi.ClientTenantDirectoryMembership
 import io.github.escossio.andy.sdk.clientapi.ClientTenantMembership
 import io.github.escossio.andy.sdk.clientapi.ClientTenantRole
 import io.github.escossio.andy.sdk.clientapi.ContinuationResult
@@ -586,6 +589,338 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
+    fun tenantDirectoryPublishesOnlyExactAuthenticatedMemberships() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val session = FakeSessionClient(
+            bootstrap = AuthenticatedBootstrapResult.Success(
+                authenticatedBootstrap(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = memberships,
+                ),
+            ),
+            directory = AuthenticatedTenantDirectoryResult.Success(
+                AuthenticatedClientTenantDirectory(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = listOf(
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_source",
+                            tenantId = SOURCE_TENANT,
+                            displayName = "Personal",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_target",
+                            tenantId = TARGET_TENANT,
+                            displayName = "Leonardo",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = FakeSessionStore(
+                sessionCredential(tenantId = SOURCE_TENANT),
+            ),
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshTenantDirectory()
+
+        val directory =
+            coordinator.tenantDirectoryState.value as TenantDirectoryState.Available
+        assertEquals(SOURCE_TENANT, directory.activeTenantId)
+        assertEquals(listOf("Personal", "Leonardo"), directory.memberships.map { it.displayName })
+        assertEquals(1, session.directoryCalls)
+    }
+
+    @Test
+    fun tenantDirectoryAuthorityMismatchDoesNotInvalidateConnectedSession() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val session = FakeSessionClient(
+            bootstrap = AuthenticatedBootstrapResult.Success(
+                authenticatedBootstrap(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = memberships,
+                ),
+            ),
+            directory = AuthenticatedTenantDirectoryResult.Success(
+                AuthenticatedClientTenantDirectory(
+                    activeTenantId = SOURCE_TENANT,
+                    memberships = listOf(
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_source",
+                            tenantId = SOURCE_TENANT,
+                            displayName = "Personal",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                        ClientTenantDirectoryMembership(
+                            membershipId = "ctm_wrong",
+                            tenantId = TARGET_TENANT,
+                            displayName = "Leonardo",
+                            role = ClientTenantRole.OWNER,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = FakeSessionStore(
+                sessionCredential(tenantId = SOURCE_TENANT),
+            ),
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshTenantDirectory()
+
+        assertSame(
+            TenantDirectoryState.Unavailable,
+            coordinator.tenantDirectoryState.value,
+        )
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
+    fun explicitTenantSwitchUsesFreshDeviceSessionAndResetsGmailState() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val store = FakeSessionStore(
+            sessionCredential(tenantId = SOURCE_TENANT),
+        )
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+            gmailClient = FakeGmailClient(),
+            sessionTelemetry = { event, fields -> events += event to fields },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshGmailConnection()
+        assertSame(GmailConnectionState.Disconnected, coordinator.gmailState.value)
+
+        assertTrue(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(TARGET_TENANT, connected.bootstrap.activeTenantId)
+        assertEquals(TARGET_TENANT, store.current?.tenantId)
+        assertEquals(listOf(TARGET_TENANT), session.requestedTenantIds)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        assertEquals(2, session.bootstrapCalls)
+        assertSame(GmailConnectionState.Idle, coordinator.gmailState.value)
+        assertTrue(
+            events.any {
+                it.first == "CLIENT_SESSION_TENANT_SWITCH" &&
+                    it.second["result"] == "SUCCESS"
+            },
+        )
+        val rendered = events.toString()
+        assertFalse(rendered.contains(SOURCE_TENANT))
+        assertFalse(rendered.contains(TARGET_TENANT))
+    }
+
+    @Test
+    fun explicitTenantSwitchToCurrentTenantIsNoopAndPreservesGmailState() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val store = FakeSessionStore(
+            sessionCredential(tenantId = SOURCE_TENANT),
+        )
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+            gmailClient = FakeGmailClient(),
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshGmailConnection()
+
+        assertTrue(coordinator.switchActiveTenant(SOURCE_TENANT))
+
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+        assertEquals(SOURCE_TENANT, store.current?.tenantId)
+        assertSame(GmailConnectionState.Disconnected, coordinator.gmailState.value)
+    }
+
+    @Test
+    fun explicitTenantSwitchRejectsTargetOutsideAuthenticatedMemberships() = runBlocking {
+        val memberships = listOf(
+            ClientTenantMembership(
+                "ctm_source",
+                SOURCE_TENANT,
+                ClientTenantRole.OWNER,
+            ),
+        )
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+            gmailClient = FakeGmailClient(),
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshGmailConnection()
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+        assertSame(original, store.current)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+        assertSame(GmailConnectionState.Disconnected, coordinator.gmailState.value)
+    }
+
+    @Test
+    fun explicitTenantSwitchFailureRollsBackSessionStoreStateAndGmail() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(
+            memberships = memberships,
+            startFailure = ClientSessionErrorCode.NETWORK_FAILURE,
+        )
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+            gmailClient = FakeGmailClient(),
+            sessionTelemetry = { event, fields -> events += event to fields },
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.refreshGmailConnection()
+        val savesBeforeSwitch = store.saveCalls
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertSame(original, store.current)
+        assertEquals(savesBeforeSwitch, store.saveCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+        assertSame(GmailConnectionState.Disconnected, coordinator.gmailState.value)
+        assertTrue(
+            events.any {
+                it.first == "CLIENT_SESSION_TENANT_SWITCH" &&
+                    it.second["result"] == "ROLLED_BACK"
+            },
+        )
+    }
+
+    @Test
+    fun explicitTenantSwitchRejectsServerSessionForDifferentTenant() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(
+            memberships = memberships,
+            issuedTenantOverride = SOURCE_TENANT,
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        val savesBeforeSwitch = store.saveCalls
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertSame(original, store.current)
+        assertEquals(savesBeforeSwitch, store.saveCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
+    fun explicitTenantSwitchRejectsServerSessionForDifferentHumanBeforePersistence() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(
+            memberships = memberships,
+            issuedHumanIdentityOverride = OTHER_HUMAN_ID,
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        val savesBeforeSwitch = store.saveCalls
+        val bootstrapsBeforeSwitch = session.bootstrapCalls
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertSame(original, store.current)
+        assertEquals(savesBeforeSwitch, store.saveCalls)
+        assertEquals(bootstrapsBeforeSwitch, session.bootstrapCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
+    fun explicitTenantSwitchRejectsServerSessionForDifferentDeviceBeforePersistence() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val original = sessionCredential(tenantId = SOURCE_TENANT)
+        val store = FakeSessionStore(original)
+        val session = TenantSwitchSessionClient(
+            memberships = memberships,
+            issuedDeviceIdOverride = OTHER_DEVICE_ID,
+        )
+        val coordinator = coordinator(
+            ready = true,
+            client = FakeHumanClient(),
+            bootstrapClient = FakeBootstrapClient(),
+            sessionClient = session,
+            store = store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        val savesBeforeSwitch = store.saveCalls
+        val bootstrapsBeforeSwitch = session.bootstrapCalls
+
+        assertFalse(coordinator.switchActiveTenant(TARGET_TENANT))
+
+        assertSame(original, store.current)
+        assertEquals(savesBeforeSwitch, store.saveCalls)
+        assertEquals(bootstrapsBeforeSwitch, session.bootstrapCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(SOURCE_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
     fun gmailConnectUsesOneTimeServerCodeAfterClientSession() = runBlocking {
         val gmail = FakeGmailClient()
         val authorization = FakeGmailAuthorization()
@@ -864,10 +1199,15 @@ class OnboardingCoordinatorTest {
             ClientSessionCompleteResult.Success(sessionCredential()),
         private val bootstrap: AuthenticatedBootstrapResult =
             AuthenticatedBootstrapResult.Success(authenticatedBootstrap()),
+        private val directory: AuthenticatedTenantDirectoryResult =
+            AuthenticatedTenantDirectoryResult.Failure(
+                ClientSessionErrorCode.CLIENT_SESSION_UNAVAILABLE,
+            ),
     ) : ClientSessionClient {
         var startCalls = 0
         var completeCalls = 0
         var bootstrapCalls = 0
+        var directoryCalls = 0
         val requestedTenantIds = mutableListOf<String?>()
 
         override suspend fun start(
@@ -892,6 +1232,13 @@ class OnboardingCoordinatorTest {
         ): AuthenticatedBootstrapResult {
             bootstrapCalls++
             return bootstrap
+        }
+
+        override suspend fun tenantDirectory(
+            session: ClientSessionCredential,
+        ): AuthenticatedTenantDirectoryResult {
+            directoryCalls++
+            return directory
         }
     }
 
@@ -1063,6 +1410,64 @@ class OnboardingCoordinatorTest {
         }
     }
 
+    private class TenantSwitchSessionClient(
+        private val memberships: List<ClientTenantMembership>,
+        private val startFailure: ClientSessionErrorCode? = null,
+        private val issuedTenantOverride: String? = null,
+        private val issuedHumanIdentityOverride: String? = null,
+        private val issuedDeviceIdOverride: String? = null,
+    ) : ClientSessionClient {
+        var startCalls = 0
+        var completeCalls = 0
+        var bootstrapCalls = 0
+        val requestedTenantIds = mutableListOf<String?>()
+        private var requestedTenantId: String? = null
+
+        override suspend fun start(
+            publicKeySpkiB64Url: String,
+            requestedTenantId: String?,
+        ): ClientSessionChallengeResult {
+            startCalls++
+            requestedTenantIds += requestedTenantId
+            this.requestedTenantId = requestedTenantId
+            if (startFailure != null) {
+                return ClientSessionChallengeResult.Failure(startFailure)
+            }
+            return ClientSessionChallengeResult.Success(sessionChallenge())
+        }
+
+        override suspend fun complete(
+            challengeId: String,
+            signatureB64Url: String,
+        ): ClientSessionCompleteResult {
+            completeCalls++
+            val tenantId =
+                issuedTenantOverride
+                    ?: requestedTenantId
+                    ?: SOURCE_TENANT
+            return ClientSessionCompleteResult.Success(
+                sessionCredential(
+                    tenantId = tenantId,
+                    humanIdentityId = issuedHumanIdentityOverride ?: HUMAN_ID,
+                    deviceId = issuedDeviceIdOverride ?: DEVICE_ID,
+                ),
+            )
+        }
+
+        override suspend fun bootstrap(
+            session: ClientSessionCredential,
+        ): AuthenticatedBootstrapResult {
+            bootstrapCalls++
+            return AuthenticatedBootstrapResult.Success(
+                authenticatedBootstrap(
+                    expiresAt = session.expiresAt,
+                    activeTenantId = session.tenantId,
+                    memberships = memberships,
+                ),
+            )
+        }
+    }
+
     private class FakeSessionStore(
         var current: ClientSessionCredential? = null,
     ) : ClientSessionStore {
@@ -1091,6 +1496,23 @@ class OnboardingCoordinatorTest {
         const val GRANT_TOKEN = "hcg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val SESSION_TOKEN = "cst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val DEVICE_ID = "cdev_exampledevice12345678901"
+        const val OTHER_HUMAN_ID = "hid_otheropaqueidentity123"
+        const val OTHER_DEVICE_ID = "cdev_otherdevice12345678901"
+        const val SOURCE_TENANT = "tnt_synthetic"
+        const val TARGET_TENANT = "tnt_target"
+
+        fun dualTenantMemberships() = listOf(
+            ClientTenantMembership(
+                "ctm_source",
+                SOURCE_TENANT,
+                ClientTenantRole.OWNER,
+            ),
+            ClientTenantMembership(
+                "ctm_target",
+                TARGET_TENANT,
+                ClientTenantRole.OWNER,
+            ),
+        )
 
         fun connectedGmailResult() = GmailConnectionResult.Success(
             GmailConnection(
@@ -1119,27 +1541,32 @@ class OnboardingCoordinatorTest {
 
         fun sessionCredential(
             expiresAt: Instant = Instant.parse("2030-01-01T00:15:00Z"),
+            tenantId: String = SOURCE_TENANT,
+            humanIdentityId: String = HUMAN_ID,
+            deviceId: String = DEVICE_ID,
         ) = ClientSessionCredential(
             token = SESSION_TOKEN,
             sessionId = "csn_examplesession12345678901",
             expiresAt = expiresAt,
-            humanIdentityId = HUMAN_ID,
-            deviceId = DEVICE_ID,
-            tenantId = "tnt_synthetic",
+            humanIdentityId = humanIdentityId,
+            deviceId = deviceId,
+            tenantId = tenantId,
         )
 
         fun authenticatedBootstrap(
             expiresAt: Instant = Instant.parse("2030-01-01T00:15:00Z"),
-        ) = AuthenticatedClientBootstrap(
-            humanIdentityId = HUMAN_ID,
-            activeTenantId = "tnt_synthetic",
-            memberships = listOf(
+            activeTenantId: String = SOURCE_TENANT,
+            memberships: List<ClientTenantMembership> = listOf(
                 ClientTenantMembership(
-                    "ctm_synthetic",
-                    "tnt_synthetic",
+                    "ctm_source",
+                    SOURCE_TENANT,
                     ClientTenantRole.OWNER,
                 ),
             ),
+        ) = AuthenticatedClientBootstrap(
+            humanIdentityId = HUMAN_ID,
+            activeTenantId = activeTenantId,
+            memberships = memberships,
             device = ClientDevice(
                 DEVICE_ID,
                 "sha256:" + "f".repeat(64),

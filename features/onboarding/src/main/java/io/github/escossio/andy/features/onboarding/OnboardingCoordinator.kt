@@ -9,6 +9,8 @@ import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialRes
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
+import io.github.escossio.andy.sdk.clientapi.AuthenticatedTenantDirectoryResult
+import io.github.escossio.andy.sdk.clientapi.ClientTenantDirectoryMembership
 import io.github.escossio.andy.sdk.clientapi.ChallengeResult
 import io.github.escossio.andy.sdk.clientapi.ClientLocationClient
 import io.github.escossio.andy.sdk.clientapi.ClientLocationErrorCode
@@ -49,6 +51,17 @@ data class OnboardingConfiguration(
     val canonicalDeviceName: String,
 )
 
+sealed interface TenantDirectoryState {
+    data object Idle : TenantDirectoryState
+    data object Loading : TenantDirectoryState
+    data object Unavailable : TenantDirectoryState
+
+    data class Available(
+        val activeTenantId: String,
+        val memberships: List<ClientTenantDirectoryMembership>,
+    ) : TenantDirectoryState
+}
+
 class OnboardingCoordinator(
     ready: Boolean,
     private val config: OnboardingConfiguration,
@@ -86,12 +99,18 @@ class OnboardingCoordinator(
         MutableStateFlow<GmailConnectionState>(GmailConnectionState.Idle)
     val gmailState: StateFlow<GmailConnectionState> = gmailMutable.asStateFlow()
 
+    private val tenantDirectoryMutable =
+        MutableStateFlow<TenantDirectoryState>(TenantDirectoryState.Idle)
+    val tenantDirectoryState: StateFlow<TenantDirectoryState> =
+        tenantDirectoryMutable.asStateFlow()
+
     private var continuationGrant: HumanAuthContinuationGrant? = null
     private var validatedIdentity: HumanIdentityReference? = null
     private var clientSession: ClientSessionCredential? = null
     private val deviceReady = ready
     private val sessionMutex = Mutex()
     private val gmailMutex = Mutex()
+    private val tenantDirectoryMutex = Mutex()
 
     fun takeContinuationGrant(): HumanAuthContinuationGrant? {
         val grant = continuationGrant
@@ -177,6 +196,7 @@ class OnboardingCoordinator(
             bootstrapMutable.value = DeviceBootstrapState.Idle
             transitionSession(ClientSessionState.Idle, "GOOGLE_REAUTH")
             gmailMutable.value = GmailConnectionState.Idle
+            tenantDirectoryMutable.value = TenantDirectoryState.Idle
             true
         }
         if (!reset) return
@@ -236,6 +256,187 @@ class OnboardingCoordinator(
         sessionMutex.withLock {
             if (sessionMutable.value is ClientSessionState.Connected) return@withLock
             restoreOrEstablish(automatic = false)
+        }
+    }
+
+    suspend fun switchActiveTenant(targetTenantId: String): Boolean =
+        sessionMutex.withLock sessionLock@{
+            val target = targetTenantId.trim()
+            if (target.isEmpty() || target.length > 64) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "INVALID_TARGET",
+                )
+                return@sessionLock false
+            }
+
+            val previousState =
+                sessionMutable.value as? ClientSessionState.Connected
+            val previousSession = clientSession
+            if (previousState == null || previousSession == null) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "NOT_CONNECTED",
+                )
+                return@sessionLock false
+            }
+            if (
+                previousState.bootstrap.activeTenantId != previousSession.tenantId ||
+                previousState.bootstrap.humanIdentityId != previousSession.humanIdentityId ||
+                previousState.bootstrap.device.deviceId != previousSession.deviceId
+            ) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "CURRENT_AUTHORITY_MISMATCH",
+                )
+                return@sessionLock false
+            }
+            if (
+                previousState.bootstrap.memberships.none {
+                    it.tenantId == target
+                }
+            ) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "REJECTED",
+                    "reason" to "TARGET_NOT_MEMBER",
+                )
+                return@sessionLock false
+            }
+            if (target == previousSession.tenantId) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "NOOP",
+                )
+                return@sessionLock true
+            }
+
+            gmailMutex.withLock gmailLock@{
+                val previousGmailState = gmailMutable.value
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "STARTED",
+                )
+                establishFreshSession(
+                    automatic = false,
+                    requestedTenantIdOverride = target,
+                    trigger = SessionRefreshTrigger.TENANT_SWITCH,
+                )
+
+                val nextState =
+                    sessionMutable.value as? ClientSessionState.Connected
+                val nextSession = clientSession
+                val switched = (
+                    nextState != null &&
+                        nextSession != null &&
+                        nextSession.tenantId == target &&
+                        nextState.bootstrap.activeTenantId == target &&
+                        nextSession.humanIdentityId ==
+                        previousSession.humanIdentityId &&
+                        nextState.bootstrap.humanIdentityId ==
+                        previousSession.humanIdentityId &&
+                        nextSession.deviceId == previousSession.deviceId &&
+                        nextState.bootstrap.device.deviceId ==
+                        previousSession.deviceId
+                    )
+
+                if (!switched) {
+                    clientSession = previousSession
+                    transitionSession(
+                        previousState,
+                        "TENANT_SWITCH_ROLLBACK",
+                    )
+                    gmailMutable.value = previousGmailState
+                    emitSessionEvent(
+                        "CLIENT_SESSION_TENANT_SWITCH",
+                        "result" to "ROLLED_BACK",
+                    )
+                    return@gmailLock false
+                }
+
+                gmailMutable.value = GmailConnectionState.Idle
+                emitSessionEvent(
+                    "CLIENT_SESSION_TENANT_SWITCH",
+                    "result" to "SUCCESS",
+                )
+                true
+            }
+        }
+
+    suspend fun refreshTenantDirectory() {
+        tenantDirectoryMutex.withLock {
+            val connected =
+                sessionMutable.value as? ClientSessionState.Connected
+            val session = clientSession
+            if (
+                connected == null ||
+                session == null ||
+                connected.bootstrap.activeTenantId != session.tenantId ||
+                connected.bootstrap.humanIdentityId != session.humanIdentityId ||
+                connected.bootstrap.device.deviceId != session.deviceId
+            ) {
+                tenantDirectoryMutable.value = TenantDirectoryState.Idle
+                return@withLock
+            }
+
+            tenantDirectoryMutable.value = TenantDirectoryState.Loading
+            val directory = when (
+                val result = sessionClient.tenantDirectory(session)
+            ) {
+                is AuthenticatedTenantDirectoryResult.Success ->
+                    result.directory
+                is AuthenticatedTenantDirectoryResult.Failure -> {
+                    tenantDirectoryMutable.value =
+                        TenantDirectoryState.Unavailable
+                    emitSessionEvent(
+                        "CLIENT_TENANT_DIRECTORY",
+                        "result" to "UNAVAILABLE",
+                        "category" to result.error.name,
+                    )
+                    return@withLock
+                }
+            }
+
+            val bootstrapMemberships =
+                connected.bootstrap.memberships.associateBy { it.membershipId }
+            val exactAuthority = (
+                directory.activeTenantId == session.tenantId &&
+                    directory.memberships.size ==
+                    connected.bootstrap.memberships.size &&
+                    directory.memberships.all { option ->
+                        val membership =
+                            bootstrapMemberships[option.membershipId]
+                        membership != null &&
+                            membership.tenantId == option.tenantId &&
+                            membership.role == option.role
+                    } &&
+                    directory.memberships.count {
+                        it.tenantId == directory.activeTenantId
+                    } == 1
+                )
+
+            if (!exactAuthority) {
+                tenantDirectoryMutable.value =
+                    TenantDirectoryState.Unavailable
+                emitSessionEvent(
+                    "CLIENT_TENANT_DIRECTORY",
+                    "result" to "AUTHORITY_MISMATCH",
+                )
+                return@withLock
+            }
+
+            tenantDirectoryMutable.value = TenantDirectoryState.Available(
+                activeTenantId = directory.activeTenantId,
+                memberships = directory.memberships,
+            )
+            emitSessionEvent(
+                "CLIENT_TENANT_DIRECTORY",
+                "result" to "SUCCESS",
+                "count" to directory.memberships.size.toString(),
+            )
         }
     }
 
@@ -662,14 +863,23 @@ class OnboardingCoordinator(
         val established =
             (bootstrapMutable.value as? DeviceBootstrapState.Established)?.authority
         if (
-            established != null &&
             (
-                established.humanIdentityId != issued.humanIdentityId ||
-                    established.device.deviceId != issued.deviceId ||
+                requestedTenantId != null &&
+                    requestedTenantId != issued.tenantId
+            ) ||
+            (
+                previousSession != null &&
                     (
-                        established.initialTenantId != null &&
-                            established.initialTenantId != issued.tenantId
-                )
+                        previousSession.humanIdentityId != issued.humanIdentityId ||
+                            previousSession.deviceId != issued.deviceId
+                    )
+            ) ||
+            (
+                established != null &&
+                    (
+                        established.humanIdentityId != issued.humanIdentityId ||
+                            established.device.deviceId != issued.deviceId
+                    )
             )
         ) {
             clientSession = previousSession
@@ -988,6 +1198,7 @@ class OnboardingCoordinator(
         EXPIRED,
         EXPIRING,
         REJECTED,
+        TENANT_SWITCH,
     }
 }
 

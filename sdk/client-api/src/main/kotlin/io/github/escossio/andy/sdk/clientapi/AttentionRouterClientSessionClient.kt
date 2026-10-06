@@ -91,6 +91,28 @@ sealed interface AuthenticatedBootstrapResult {
     data class Failure(val error: ClientSessionErrorCode) : AuthenticatedBootstrapResult
 }
 
+data class ClientTenantDirectoryMembership(
+    val membershipId: String,
+    val tenantId: String,
+    val displayName: String,
+    val role: ClientTenantRole,
+)
+
+data class AuthenticatedClientTenantDirectory(
+    val activeTenantId: String,
+    val memberships: List<ClientTenantDirectoryMembership>,
+)
+
+sealed interface AuthenticatedTenantDirectoryResult {
+    data class Success(
+        val directory: AuthenticatedClientTenantDirectory,
+    ) : AuthenticatedTenantDirectoryResult
+
+    data class Failure(
+        val error: ClientSessionErrorCode,
+    ) : AuthenticatedTenantDirectoryResult
+}
+
 interface ClientSessionClient {
     suspend fun start(
         publicKeySpkiB64Url: String,
@@ -105,6 +127,13 @@ interface ClientSessionClient {
     suspend fun bootstrap(
         session: ClientSessionCredential,
     ): AuthenticatedBootstrapResult
+
+    suspend fun tenantDirectory(
+        session: ClientSessionCredential,
+    ): AuthenticatedTenantDirectoryResult =
+        AuthenticatedTenantDirectoryResult.Failure(
+            ClientSessionErrorCode.CLIENT_SESSION_UNAVAILABLE,
+        )
 }
 
 data class ClientSessionTransportResponse(val statusCode: Int, val body: String?)
@@ -190,6 +219,25 @@ class AttentionRouterClientSessionClient(
             }
         } catch (_: Exception) {
             AuthenticatedBootstrapResult.Failure(ClientSessionErrorCode.NETWORK_FAILURE)
+        }
+    }
+
+    override suspend fun tenantDirectory(
+        session: ClientSessionCredential,
+    ): AuthenticatedTenantDirectoryResult {
+        return try {
+            val response = session.withToken { token ->
+                transport.get(TENANT_DIRECTORY_PATH, token)
+            }
+            if (response.statusCode == 200) {
+                parseTenantDirectory(response.body)
+            } else {
+                AuthenticatedTenantDirectoryResult.Failure(error(response.body))
+            }
+        } catch (_: Exception) {
+            AuthenticatedTenantDirectoryResult.Failure(
+                ClientSessionErrorCode.NETWORK_FAILURE,
+            )
         }
     }
 
@@ -331,6 +379,91 @@ class AttentionRouterClientSessionClient(
         )
     }
 
+    private fun parseTenantDirectory(
+        body: String?,
+    ): AuthenticatedTenantDirectoryResult {
+        val value = obj(body) ?: return unexpectedTenantDirectory()
+        if (
+            value.keys != setOf(
+                "contract_version",
+                "active_tenant_id",
+                "memberships",
+            ) ||
+            value.str("contract_version") != "1"
+        ) {
+            return unexpectedTenantDirectory()
+        }
+
+        val activeTenantId = value.str("active_tenant_id")
+            ?.takeIf { it.length in 1..64 }
+            ?: return unexpectedTenantDirectory()
+        val membershipsValue = value["memberships"] as? JsonArray
+            ?: return unexpectedTenantDirectory()
+        if (membershipsValue.isEmpty() || membershipsValue.size > 100) {
+            return unexpectedTenantDirectory()
+        }
+
+        val memberships = membershipsValue.map { element ->
+            val membership = element as? JsonObject
+                ?: return unexpectedTenantDirectory()
+            if (
+                membership.keys != setOf(
+                    "membership_id",
+                    "tenant_id",
+                    "display_name",
+                    "role",
+                    "status",
+                )
+            ) {
+                return unexpectedTenantDirectory()
+            }
+            val membershipId = membership.str("membership_id")
+                ?.takeIf { it.length in 1..64 }
+                ?: return unexpectedTenantDirectory()
+            val tenantId = membership.str("tenant_id")
+                ?.takeIf { it.length in 1..64 }
+                ?: return unexpectedTenantDirectory()
+            val displayName = membership.str("display_name")
+                ?.takeIf {
+                    it.length in 1..160 &&
+                        it == it.trim() &&
+                        it.none { char -> char == '\n' || char == '\r' || char == '\t' }
+                }
+                ?: return unexpectedTenantDirectory()
+            val role = try {
+                ClientTenantRole.valueOf(
+                    membership.str("role") ?: return unexpectedTenantDirectory(),
+                )
+            } catch (_: Exception) {
+                return unexpectedTenantDirectory()
+            }
+            if (membership.str("status") != "ACTIVE") {
+                return unexpectedTenantDirectory()
+            }
+            ClientTenantDirectoryMembership(
+                membershipId = membershipId,
+                tenantId = tenantId,
+                displayName = displayName,
+                role = role,
+            )
+        }
+
+        if (
+            memberships.map { it.membershipId }.toSet().size != memberships.size ||
+            memberships.map { it.tenantId }.toSet().size != memberships.size ||
+            memberships.count { it.tenantId == activeTenantId } != 1
+        ) {
+            return unexpectedTenantDirectory()
+        }
+
+        return AuthenticatedTenantDirectoryResult.Success(
+            AuthenticatedClientTenantDirectory(
+                activeTenantId = activeTenantId,
+                memberships = memberships,
+            ),
+        )
+    }
+
     private fun parseDevice(value: JsonObject): ClientDevice? {
         if (
             value.keys != setOf(
@@ -414,6 +547,11 @@ class AttentionRouterClientSessionClient(
         ClientSessionErrorCode.UNEXPECTED_RESPONSE,
     )
 
+    private fun unexpectedTenantDirectory() =
+        AuthenticatedTenantDirectoryResult.Failure(
+            ClientSessionErrorCode.UNEXPECTED_RESPONSE,
+        )
+
     private fun obj(body: String?) = try {
         body
             ?.takeIf { it.isNotBlank() }
@@ -437,6 +575,7 @@ class AttentionRouterClientSessionClient(
     private companion object {
         const val START_PATH = "/api/v1/session/device/challenges"
         const val BOOTSTRAP_PATH = "/api/v1/client/bootstrap"
+        const val TENANT_DIRECTORY_PATH = "/api/v1/client/tenants"
         val B64URL = Regex("^[A-Za-z0-9_-]+$")
         val CHALLENGE_ID = Regex("^csc_[A-Za-z0-9_-]{20,}$")
         val SESSION_ID = Regex("^csn_[A-Za-z0-9_-]{20,}$")

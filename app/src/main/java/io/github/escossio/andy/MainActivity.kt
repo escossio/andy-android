@@ -1,6 +1,8 @@
 package io.github.escossio.andy
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -22,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModelProvider
 import io.github.escossio.andy.features.approvals.ApprovalPanel
+import io.github.escossio.andy.features.command.CommandExportPayload
 import io.github.escossio.andy.features.command.CommandPanel
 import io.github.escossio.andy.features.onboarding.ClientLocationFailure
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
@@ -30,6 +33,20 @@ import io.github.escossio.andy.sdk.clientapi.ClientApprovalDecision
 import kotlinx.coroutines.launch
 
 internal const val BOOTSTRAP_TEXT = "Andy"
+
+private fun exportConversation(
+    context: Context,
+    payload: CommandExportPayload,
+) {
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, payload.subject)
+        putExtra(Intent.EXTRA_TEXT, payload.text)
+    }
+    context.startActivity(
+        Intent.createChooser(shareIntent, "Exportar conversa"),
+    )
+}
 
 class MainActivity : ComponentActivity() {
     private lateinit var sessionViewModel: AndySessionViewModel
@@ -76,6 +93,7 @@ private fun AndyBootstrap(
     val sessionState by coordinator.sessionState.collectAsState()
     val locationState by coordinator.locationState.collectAsState()
     val gmailState by coordinator.gmailState.collectAsState()
+    val tenantDirectoryState by coordinator.tenantDirectoryState.collectAsState()
     val approvalState by approvalCoordinator.state.collectAsState()
     val commandState by commandCoordinator.state.collectAsState()
     val context = LocalContext.current
@@ -106,6 +124,7 @@ private fun AndyBootstrap(
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
+            coordinator.refreshTenantDirectory()
             coordinator.refreshGmailConnection()
             approvalCoordinator.refresh()
             commandCoordinator.refresh()
@@ -135,6 +154,7 @@ private fun AndyBootstrap(
             sessionState = sessionState,
             locationState = locationState,
             gmailState = gmailState,
+            tenantDirectoryState = tenantDirectoryState,
             cameraPermissionGranted = cameraPermissionGranted,
             onRequestCameraPermission = {
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -168,6 +188,9 @@ private fun AndyBootstrap(
             onDisconnectGmail = {
                 scope.launch { coordinator.disconnectGmail() }
             },
+            onSwitchTenant = { tenantId ->
+                scope.launch { coordinator.switchActiveTenant(tenantId) }
+            },
             commandContent = {
                 CommandPanel(
                     state = commandState,
@@ -178,6 +201,9 @@ private fun AndyBootstrap(
                     },
                     onRefresh = {
                         scope.launch { commandCoordinator.refresh() }
+                    },
+                    onExport = { payload ->
+                        exportConversation(context, payload)
                     },
                     onMicrophone = {},
                 )
