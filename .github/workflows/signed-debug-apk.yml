@@ -208,3 +208,50 @@ jobs:
         if: always()
         shell: bash
         run: rm -f "$RUNNER_TEMP/andy-dev.keystore"
+
+
+  publish-firebase:
+    name: publish-private-firebase-app-distribution
+    needs: sign-candidate
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified signed APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: andy-debug-apk-signed
+          path: ${{ runner.temp }}/andy-debug-apk-signed
+
+      - name: Install pinned Firebase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global firebase-tools@13.35.1
+
+      - name: Configure Firebase ADC credential boundary
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FIREBASE_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
+
+
+      - name: Upload private Firebase distribution
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-service-account.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          firebase appdistribution:distribute \
+            "$RUNNER_TEMP/andy-debug-apk-signed/andy-debug.apk" \
+            --app "1:410434637355:android:d83d216b490e43a039646e" \
+            --project "andy-android-a30c9" \
+            --release-notes "Signed debug APK"
+
+      - name: Cleanup Firebase ADC credential boundary
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/firebase-service-account.json"

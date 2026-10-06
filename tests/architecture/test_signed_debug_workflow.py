@@ -60,6 +60,27 @@ class SignedDebugWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("zipalign", sign)
         self.assertIn("name: andy-debug-apk-signed", sign)
 
+    def test_publish_job_isolated_from_candidate(self):
+        text = self.workflow()
+        publish = text.split("  publish-firebase:\n", 1)[1]
+        self.assertIn("needs: sign-candidate", publish)
+        self.assertIn("andy-debug-apk-signed", publish)
+        self.assertNotIn("actions/checkout", publish)
+        self.assertNotIn("./gradlew", publish)
+        self.assertNotIn("git ", publish)
+        self.assertIn("FIREBASE_SERVICE_ACCOUNT_JSON", publish)
+        self.assertNotIn("FIREBASE_TOKEN", publish)
+        self.assertNotIn("trap 'rm -f", publish)
+        self.assertIn("if: always()", publish)
+        self.assertLess(
+            publish.index("Install pinned Firebase CLI"),
+            publish.index("Configure Firebase ADC credential boundary"),
+        )
+        self.assertLess(
+            publish.index("Upload private Firebase distribution"),
+            publish.index("Cleanup Firebase ADC credential boundary"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
