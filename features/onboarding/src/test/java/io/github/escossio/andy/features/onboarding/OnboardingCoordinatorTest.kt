@@ -300,6 +300,53 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
+    fun startupWithEmptyStoreKeepsUnauthenticatedWithoutStartingSession() = runBlocking {
+        val store = FakeSessionStore()
+        val session = FakeSessionClient()
+        val human = FakeHumanClient()
+        val bootstrap = FakeBootstrapClient()
+        val coordinator = coordinator(
+            true,
+            human,
+            bootstrap,
+            session,
+            store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+
+        assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
+        assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+        assertEquals(0, human.challengeCalls)
+        assertEquals(0, bootstrap.startCalls)
+    }
+
+    @Test
+    fun foregroundWithoutAuthenticationDoesNotStartChallengeOrSession() = runBlocking {
+        val store = FakeSessionStore()
+        val session = FakeSessionClient()
+        val human = FakeHumanClient()
+        val bootstrap = FakeBootstrapClient()
+        val coordinator = coordinator(
+            true,
+            human,
+            bootstrap,
+            session,
+            store,
+        )
+
+        coordinator.maintainClientSession()
+
+        assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+        assertEquals(0, human.challengeCalls)
+        assertEquals(0, bootstrap.startCalls)
+    }
+
+    @Test
     fun foregroundMaintenanceDoesNotRenewFreshSession() = runBlocking {
         val currentTime = Instant.parse("2029-01-01T00:00:00Z")
         val stored = sessionCredential(currentTime.plusSeconds(300))
@@ -578,6 +625,7 @@ class OnboardingCoordinatorTest {
             FakeHumanClient(),
             FakeBootstrapClient(),
             session,
+            FakeSessionStore(sessionCredential(expiresAt = Instant.parse("2028-01-01T00:00:00Z"))),
         )
 
         coordinator.restoreClientSessionOnStartup()
