@@ -884,6 +884,15 @@ class OnboardingCoordinator(
 
         if (stored == null) {
             emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "ABSENT")
+            if (
+                automatic && pendingTenantHint == null &&
+                bootstrapMutable.value !is DeviceBootstrapState.Established
+            ) {
+                // A tenantless challenge can remain pending after ACTIVE_TENANT_REQUIRED
+                // and conflict with the user's later explicit tenant selection.
+                emitSessionEvent("SESSION_MAINTENANCE_SKIPPED", "reason" to "AUTHENTICATION_REQUIRED")
+                return
+            }
             establishFreshSession(
                 automatic = automatic,
                 requestedTenantIdOverride = pendingTenantHint,

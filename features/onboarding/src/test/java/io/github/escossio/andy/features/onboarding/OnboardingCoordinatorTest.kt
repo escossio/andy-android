@@ -661,7 +661,7 @@ class OnboardingCoordinatorTest {
 
         assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
         assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
-        assertEquals(1, session.startCalls)
+        assertEquals(0, session.startCalls)
         assertEquals(0, session.completeCalls)
     }
 
@@ -1379,7 +1379,8 @@ class OnboardingCoordinatorTest {
     fun automaticSessionFailureDoesNotRepeatChallengeUntilManualRetry() = runBlocking {
         val session = FakeSessionClient(complete = ClientSessionCompleteResult.Failure(
             ClientSessionErrorCode.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED))
-        val coordinator = coordinator(true, FakeHumanClient(), FakeBootstrapClient(), session)
+        val coordinator = coordinator(true, FakeHumanClient(), FakeBootstrapClient(), session,
+            store = FakeSessionStore(sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))))
         coordinator.restoreClientSessionOnStartup()
         assertEquals(1, session.startCalls)
         repeat(5) { coordinator.maintainClientSession(); coordinator.restoreClientSessionOnStartup() }
@@ -1399,7 +1400,8 @@ class OnboardingCoordinatorTest {
                 return result
             }
         }
-        val coordinator = coordinator(true, human, FakeBootstrapClient(), session)
+        val coordinator = coordinator(true, human, FakeBootstrapClient(), session,
+            store = FakeSessionStore(sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))))
         val maintenance = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.maintainClientSession() }
         gate.entered.await()
         val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
@@ -1462,6 +1464,50 @@ class OnboardingCoordinatorTest {
         assertEquals(1, bootstrap.completeCalls)
         assertEquals(1, session.startCalls)
         assertNull(coordinator.takeContinuationGrant())
+    }
+
+    @Test
+    fun automaticStartupWithoutStoredAuthorityCannotPoisonExplicitTenantChallenge() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val issued = TenantSwitchSessionClient(memberships)
+        var unboundPending = false
+        var attempts = 0
+        val session = object : ClientSessionClient by issued {
+            override suspend fun start(publicKeySpkiB64Url: String, requestedTenantId: String?): ClientSessionChallengeResult {
+                attempts++
+                if (requestedTenantId == null) {
+                    unboundPending = true
+                    return ClientSessionChallengeResult.Success(sessionChallenge())
+                }
+                if (unboundPending) return ClientSessionChallengeResult.Failure(ClientSessionErrorCode.CLIENT_SESSION_AUTHORITY_REJECTED)
+                return issued.start(publicKeySpkiB64Url, requestedTenantId)
+            }
+            override suspend fun complete(challengeId: String, signatureB64Url: String): ClientSessionCompleteResult =
+                if (unboundPending) ClientSessionCompleteResult.Failure(ClientSessionErrorCode.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED)
+                else issued.complete(challengeId, signatureB64Url)
+        }
+        val bootstrap = FakeBootstrapClient(complete = DeviceBootstrapCompleteResult.Success(
+            established(memberships = memberships, initialTenantId = null)))
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session,
+            sessionTelemetry = { event, fields -> events += event to fields })
+        repeat(5) { coordinator.restoreClientSessionOnStartup(); coordinator.maintainClientSession() }
+        assertEquals(0, attempts)
+        assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
+        assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
+        assertTrue(events.any { it.first == "SESSION_MAINTENANCE_SKIPPED" && it.second["reason"] == "AUTHENTICATION_REQUIRED" })
+        coordinator.continueWithGoogle()
+        assertEquals(1, bootstrap.completeCalls)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.AwaitingTenantSelection)
+        repeat(5) { coordinator.maintainClientSession() }
+        assertEquals(0, attempts)
+        assertTrue(coordinator.selectTenantForSession(TARGET_TENANT))
+        assertEquals(1, attempts)
+        assertEquals(listOf(TARGET_TENANT), issued.requestedTenantIds)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        repeat(5) { coordinator.maintainClientSession() }
+        assertEquals(1, attempts)
+        assertFalse(unboundPending)
     }
 
     private class SuspensionGate {
