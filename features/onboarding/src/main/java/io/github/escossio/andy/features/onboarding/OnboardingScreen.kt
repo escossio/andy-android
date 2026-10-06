@@ -59,6 +59,7 @@ fun OnboardingScreen(
     onRetryHuman: () -> Unit,
     onRetryBootstrap: () -> Unit,
     onRetrySession: () -> Unit,
+    onSelectTenant: (String) -> Unit,
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
@@ -85,6 +86,7 @@ fun OnboardingScreen(
                 cameraPermissionGranted = cameraPermissionGranted,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onRetrySession = onRetrySession,
+                onSelectTenant = onSelectTenant,
                 onRestartHuman = onRetryHuman,
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
@@ -252,6 +254,7 @@ private fun SessionContent(
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onRetrySession: () -> Unit,
+    onSelectTenant: (String) -> Unit,
     onRestartHuman: () -> Unit,
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
@@ -277,6 +280,11 @@ private fun SessionContent(
                 title = "Carregando sua Andy",
                 body = "Sincronizando o estado autenticado deste dispositivo.",
             )
+        is ClientSessionState.AwaitingTenantSelection ->
+            InitialTenantSelectionCard(
+                memberships = sessionState.memberships,
+                onSelectTenant = onSelectTenant,
+            )
         is ClientSessionState.Connected ->
             ConnectedHome(
                 locationState = locationState,
@@ -299,6 +307,40 @@ private fun SessionContent(
             )
             PrimaryButton("Tentar conexão novamente", onRetrySession)
             SecondaryButton("Entrar novamente com Google", onRestartHuman)
+        }
+    }
+}
+
+
+@Composable
+private fun InitialTenantSelectionCard(
+    memberships: List<io.github.escossio.andy.sdk.clientapi.ClientTenantMembership>,
+    onSelectTenant: (String) -> Unit,
+) {
+    MessageCard(
+        title = "Escolha o contexto",
+        body = "Sua conta possui mais de um contexto ativo. Escolha qual deve iniciar esta sessão.",
+    )
+    memberships.forEachIndexed { index, membership ->
+        SurfaceCard {
+            AppText(
+                text = "Contexto " + (index + 1) + " · " + membership.role.displayLabel(),
+                size = 16,
+                weight = FontWeight.SemiBold,
+                color = Ink,
+            )
+            Spacer(Modifier.height(6.dp))
+            AppText(
+                text = membership.tenantId,
+                size = 12,
+                color = Muted,
+                lineHeight = 17,
+            )
+            Spacer(Modifier.height(12.dp))
+            PrimaryButton(
+                text = "Usar este contexto",
+                onClick = { onSelectTenant(membership.tenantId) },
+            )
         }
     }
 }
