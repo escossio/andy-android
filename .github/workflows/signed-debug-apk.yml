@@ -188,7 +188,7 @@ jobs:
           ZIPALIGN="$SDK_ROOT/build-tools/36.0.0/zipalign"
           APKANALYZER="$SDK_ROOT/cmdline-tools/latest/bin/apkanalyzer"
           APK="$RUNNER_TEMP/andy-debug.apk"
-          EXPECTED_CERT='6e72dda8780cc65728b3d7183234ddf8f32c600c41f23468350b6f0dd9d37677'
+          EXPECTED_CERT='dab9de67da84d79560d817b4b6f2bd4abbf27641cc596b30f0510d331cdf5e3f'
           "$APKSIGNER" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/andy-cert.txt"
           grep -F "Signer #1 certificate SHA-256 digest: $EXPECTED_CERT" "$RUNNER_TEMP/andy-cert.txt"
           "$ZIPALIGN" -c -P 16 4 "$APK"
