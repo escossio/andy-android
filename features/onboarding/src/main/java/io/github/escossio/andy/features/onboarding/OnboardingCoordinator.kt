@@ -37,6 +37,7 @@ import io.github.escossio.andy.sdk.clientapi.GmailConnectionClient
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionErrorCode
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionResult
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -110,6 +111,9 @@ class OnboardingCoordinator(
     private var pendingTenantHint: String? = null
     private val deviceReady = ready
     private val sessionMutex = Mutex()
+    private val authorityMutex = Mutex()
+    @Volatile
+    private var activeSessionOperation: SessionOperation? = null
     private val gmailMutex = Mutex()
     private val tenantDirectoryMutex = Mutex()
 
@@ -120,9 +124,14 @@ class OnboardingCoordinator(
     }
 
     suspend fun restoreClientSessionOnStartup() {
-        sessionMutex.withLock {
+        withSessionOperation(SessionOperation.MAINTENANCE) {
+            val blocked = automaticSessionBlockReason()
+            if (blocked != null) {
+                emitSessionEvent("SESSION_MAINTENANCE_SKIPPED", "reason" to blocked)
+                return@withSessionOperation
+            }
             if (!deviceReady || sessionMutable.value is ClientSessionState.Connected) {
-                return@withLock
+                return@withSessionOperation
             }
             restoreOrEstablish(automatic = true)
         }
@@ -133,14 +142,18 @@ class OnboardingCoordinator(
     ) {
         require(minimumValiditySeconds >= 0)
 
-        sessionMutex.withLock {
-            if (!deviceReady) return@withLock
-            if (sessionMutable.value is ClientSessionState.AwaitingTenantSelection) return@withLock
+        withSessionOperation(SessionOperation.MAINTENANCE) {
+            val blocked = automaticSessionBlockReason()
+            if (blocked != null) {
+                emitSessionEvent("SESSION_MAINTENANCE_SKIPPED", "reason" to blocked)
+                return@withSessionOperation
+            }
+            if (!deviceReady) return@withSessionOperation
 
             val current = clientSession
             if (current == null) {
                 restoreOrEstablish(automatic = true)
-                return@withLock
+                return@withSessionOperation
             }
 
             val currentTime = now()
@@ -164,11 +177,11 @@ class OnboardingCoordinator(
                     requestedTenantIdOverride = current.tenantId,
                     trigger = trigger,
                 )
-                return@withLock
+                return@withSessionOperation
             }
 
             if (sessionMutable.value is ClientSessionState.Connected) {
-                return@withLock
+                return@withSessionOperation
             }
 
             emitSessionEvent(
@@ -189,75 +202,96 @@ class OnboardingCoordinator(
         }
     }
 
-    suspend fun continueWithGoogle() {
-        val reset = sessionMutex.withLock {
-            pendingTenantHint = clientSession?.tenantId ?: pendingTenantHint
-            if (!clearStoredSession()) return@withLock false
-            continuationGrant = null
-            validatedIdentity = null
-            clientSession = null
-            bootstrapMutable.value = DeviceBootstrapState.Idle
-            transitionSession(ClientSessionState.Idle, "GOOGLE_REAUTH")
-            gmailMutable.value = GmailConnectionState.Idle
-            tenantDirectoryMutable.value = TenantDirectoryState.Idle
-            true
-        }
-        if (!reset) return
-
-        if (engine.state == HumanIdentityState.DeviceIdentityUnavailable) {
-            mutable.value = engine.begin()
-            return
-        }
-        if (
-            config.clientApiBaseUrl.isBlank() ||
-            config.googleWebClientId.isBlank() ||
-            config.canonicalDeviceName.isBlank()
-        ) {
-            mutable.value = engine.fail(HumanIdentityFailure.CONFIGURATION_MISSING)
-            return
-        }
-
-        mutable.value = engine.begin()
-        val challenge = when (val result = client.requestChallenge()) {
-            is ChallengeResult.Success -> result.challenge
-            is ChallengeResult.Failure -> {
-                mutable.value = engine.fail(result.error.failure())
-                return
+    suspend fun continueWithGoogle() = withSessionOperation(SessionOperation.HUMAN_AUTH) {
+        try {
+            val reset = run {
+                pendingTenantHint = clientSession?.tenantId ?: pendingTenantHint
+                if (!clearStoredSession()) return@run false
+                continuationGrant = null
+                validatedIdentity = null
+                clientSession = null
+                bootstrapMutable.value = DeviceBootstrapState.Idle
+                transitionSession(ClientSessionState.Idle, "GOOGLE_REAUTH")
+                gmailMutable.value = GmailConnectionState.Idle
+                tenantDirectoryMutable.value = TenantDirectoryState.Idle
+                true
             }
-        }
-        mutable.value = engine.challengeReceived()
+            if (!reset) return@withSessionOperation
 
-        when (val credential = provider.acquire(challenge.nonce)) {
-            ProviderCredentialResult.Cancelled ->
-                mutable.value = engine.fail(HumanIdentityFailure.PROVIDER_CANCELLED)
-            ProviderCredentialResult.Unavailable ->
-                mutable.value = engine.fail(HumanIdentityFailure.PROVIDER_UNAVAILABLE)
-            is ProviderCredentialResult.Token -> {
-                mutable.value = engine.providerCredentialReceived()
-                when (
-                    val continued = client.verifyAndContinue(
-                        challenge.challengeId,
-                        credential.idToken,
-                    )
-                ) {
-                    is ContinuationResult.Success -> {
-                        continuationGrant = continued.continuation.grant
-                        validatedIdentity = continued.continuation.identityReference
-                        mutable.value = engine.backendValidated(
-                            continued.continuation.identityReference,
-                        )
-                        continueDeviceBootstrap()
-                    }
-                    is ContinuationResult.Failure ->
-                        mutable.value = engine.fail(continued.error.failure())
+            if (engine.state == HumanIdentityState.DeviceIdentityUnavailable) {
+                mutable.value = engine.begin()
+                return@withSessionOperation
+            }
+            if (
+                config.clientApiBaseUrl.isBlank() ||
+                config.googleWebClientId.isBlank() ||
+                config.canonicalDeviceName.isBlank()
+            ) {
+                failHuman(HumanIdentityFailure.CONFIGURATION_MISSING, "CONFIGURATION")
+                return@withSessionOperation
+            }
+
+            emitSessionEvent("HUMAN_AUTH_START")
+            mutable.value = engine.begin()
+            val challenge = when (val result = client.requestChallenge()) {
+                is ChallengeResult.Success -> result.challenge
+                is ChallengeResult.Failure -> {
+                    failHuman(result.error.failure(), "CHALLENGE")
+                    return@withSessionOperation
                 }
             }
+            mutable.value = engine.challengeReceived()
+
+            val credential = provider.acquire(challenge.nonce)
+            emitSessionEvent("HUMAN_AUTH_PROVIDER_RETURNED")
+            when (credential) {
+                ProviderCredentialResult.Cancelled ->
+                    failHuman(HumanIdentityFailure.PROVIDER_CANCELLED, "PROVIDER")
+                ProviderCredentialResult.Unavailable ->
+                    failHuman(HumanIdentityFailure.PROVIDER_UNAVAILABLE, "PROVIDER")
+                is ProviderCredentialResult.Token -> {
+                    mutable.value = engine.providerCredentialReceived()
+                    when (
+                        val continued = client.verifyAndContinue(
+                            challenge.challengeId,
+                            credential.idToken,
+                        )
+                    ) {
+                        is ContinuationResult.Success -> {
+                            continuationGrant = continued.continuation.grant
+                            validatedIdentity = continued.continuation.identityReference
+                            mutable.value = engine.backendValidated(
+                                continued.continuation.identityReference,
+                            )
+                            emitSessionEvent("HUMAN_AUTH_BACKEND_VALIDATED")
+                            continueDeviceBootstrap()
+                        }
+                        is ContinuationResult.Failure ->
+                            failHuman(continued.error.failure(), "VERIFY")
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            emitSessionEvent("AUTHORITY_FLOW_CANCELLED")
+            if (continuationGrant != null && validatedIdentity != null) {
+                failBootstrap(DeviceBootstrapFailure.NETWORK_FAILURE)
+            } else if (bootstrapMutable.value is DeviceBootstrapState.Established) {
+                failSession(ClientSessionFailure.NETWORK_FAILURE)
+            } else {
+                mutable.value = engine.fail(HumanIdentityFailure.PROVIDER_CANCELLED)
+            }
+            throw cancelled
         }
     }
 
     suspend fun continueWithExistingDevice() {
-        sessionMutex.withLock {
-            if (sessionMutable.value is ClientSessionState.Connected) return@withLock
+        withSessionOperation(SessionOperation.MANUAL_SESSION) {
+            val blocked = authoritySessionBlockReason()
+            if (blocked != null) {
+                emitSessionEvent("SESSION_MAINTENANCE_SKIPPED", "reason" to blocked)
+                return@withSessionOperation
+            }
+            if (sessionMutable.value is ClientSessionState.Connected) return@withSessionOperation
             restoreOrEstablish(automatic = false)
         }
     }
@@ -609,19 +643,23 @@ class OnboardingCoordinator(
     }
 
     suspend fun retryClientSession() {
-        sessionMutex.withLock {
+        withSessionOperation(SessionOperation.MANUAL_SESSION) {
+            val blocked = authoritySessionBlockReason()
+            if (blocked != null) {
+                emitSessionEvent("SESSION_MAINTENANCE_SKIPPED", "reason" to blocked)
+                return@withSessionOperation
+            }
             emitSessionEvent(
                 "SECURE_RETRY_CLICK",
                 "state" to sessionMutable.value.telemetryName(),
                 "has_session" to (clientSession != null).toString(),
             )
-            if (sessionMutable.value is ClientSessionState.Connected) return@withLock
-            if (sessionMutable.value is ClientSessionState.AwaitingTenantSelection) return@withLock
+            if (sessionMutable.value is ClientSessionState.Connected) return@withSessionOperation
 
             val current = clientSession
             if (current == null) {
                 restoreOrEstablish(automatic = false)
-                return@withLock
+                return@withSessionOperation
             }
 
             if (!current.expiresAt.isAfter(now())) {
@@ -632,7 +670,7 @@ class OnboardingCoordinator(
                     requestedTenantIdOverride = requestedTenantId,
                     trigger = SessionRefreshTrigger.EXPIRED,
                 )
-                return@withLock
+                return@withSessionOperation
             }
 
             emitSessionEvent("CLIENT_SESSION_VALIDATION", "result" to "PRESENT_UNEXPIRED")
@@ -651,7 +689,7 @@ class OnboardingCoordinator(
         }
     }
 
-    suspend fun retryDeviceBootstrap() {
+    suspend fun retryDeviceBootstrap() = withSessionOperation(SessionOperation.DEVICE_BOOTSTRAP) {
         if (
             continuationGrant == null ||
             validatedIdentity == null ||
@@ -660,21 +698,21 @@ class OnboardingCoordinator(
             bootstrapMutable.value = DeviceBootstrapState.Failure(
                 DeviceBootstrapFailure.DEVICE_BOOTSTRAP_GRANT_REJECTED,
             )
-            return
+            return@withSessionOperation
         }
         continueDeviceBootstrap()
     }
 
-    suspend fun restartAuthentication() {
-        val reset = sessionMutex.withLock {
+    suspend fun restartAuthentication() = withSessionOperation(SessionOperation.HUMAN_AUTH) {
+        val reset = run {
             pendingTenantHint = clientSession?.tenantId ?: pendingTenantHint
-            if (!clearStoredSession()) return@withLock false
+            if (!clearStoredSession()) return@run false
             clientSession = null
             transitionSession(ClientSessionState.Idle, "AUTH_RESTART")
             gmailMutable.value = GmailConnectionState.Idle
             true
         }
-        if (!reset) return
+        if (!reset) return@withSessionOperation
 
         continuationGrant = null
         validatedIdentity = null
@@ -688,6 +726,8 @@ class OnboardingCoordinator(
         val identity = validatedIdentity
             ?: return failBootstrap(DeviceBootstrapFailure.UNEXPECTED_RESPONSE)
 
+        activeSessionOperation = SessionOperation.DEVICE_BOOTSTRAP
+        emitSessionEvent("DEVICE_BOOTSTRAP_START")
         bootstrapMutable.value = DeviceBootstrapState.Establishing
         val publicKey = try {
             devicePublicKeySpki()
@@ -728,30 +768,29 @@ class OnboardingCoordinator(
                 if (result.established.humanIdentityId != identity.opaqueId) {
                     failBootstrap(DeviceBootstrapFailure.HUMAN_IDENTITY_MISMATCH)
                 } else {
+                    emitSessionEvent("DEVICE_BOOTSTRAP_ACCEPTED")
                     bootstrapMutable.value =
                         DeviceBootstrapState.Established(result.established)
-                    sessionMutex.withLock {
-                        val hintedTenantId = pendingTenantHint?.takeIf { hint ->
-                            result.established.memberships.any { it.tenantId == hint }
-                        }
-                        if (
-                            hintedTenantId == null &&
-                            result.established.initialTenantId == null &&
-                            result.established.memberships.size > 1
-                        ) {
-                            transitionSession(
-                                ClientSessionState.AwaitingTenantSelection(
-                                    result.established.memberships,
-                                ),
-                                "TENANT_SELECTION_REQUIRED",
-                            )
-                        } else {
-                            establishFreshSession(
-                                automatic = false,
-                                requestedTenantIdOverride = hintedTenantId,
-                                trigger = SessionRefreshTrigger.DEVICE_BOOTSTRAP,
-                            )
-                        }
+                    val hintedTenantId = pendingTenantHint?.takeIf { hint ->
+                        result.established.memberships.any { it.tenantId == hint }
+                    }
+                    if (
+                        hintedTenantId == null &&
+                        result.established.memberships.size > 1
+                    ) {
+                        emitSessionEvent("TENANT_SELECTION_REQUIRED")
+                        transitionSession(
+                            ClientSessionState.AwaitingTenantSelection(
+                                result.established.memberships,
+                            ),
+                            "TENANT_SELECTION_REQUIRED",
+                        )
+                    } else {
+                        establishFreshSession(
+                            automatic = false,
+                            requestedTenantIdOverride = hintedTenantId,
+                            trigger = SessionRefreshTrigger.DEVICE_BOOTSTRAP,
+                        )
                     }
                 }
             }
@@ -759,6 +798,80 @@ class OnboardingCoordinator(
                 failBootstrap(result.error.failure())
         }
     }
+
+    private fun authoritySessionBlockReason(): String? = when {
+        state.value is HumanIdentityState.RequestingChallenge ||
+            state.value is HumanIdentityState.AcquiringProviderCredential ||
+            state.value is HumanIdentityState.ValidatingBackend -> "HUMAN_AUTH_IN_PROGRESS"
+        state.value is HumanIdentityState.Failure -> "HUMAN_AUTH_RETRY_REQUIRED"
+        bootstrapState.value is DeviceBootstrapState.Establishing -> "DEVICE_BOOTSTRAP_IN_PROGRESS"
+        bootstrapState.value is DeviceBootstrapState.Failure ||
+            continuationGrant != null -> "DEVICE_BOOTSTRAP_RETRY_REQUIRED"
+        sessionState.value is ClientSessionState.AwaitingTenantSelection -> "TENANT_SELECTION_REQUIRED"
+        else -> null
+    }
+
+    private fun automaticSessionBlockReason(): String? =
+        authoritySessionBlockReason()
+            ?: if (sessionState.value is ClientSessionState.Failure) "MANUAL_RETRY_REQUIRED" else null
+
+    private suspend fun withSessionOperation(
+        operation: SessionOperation,
+        block: suspend () -> Unit,
+    ) {
+        val authoritative = operation == SessionOperation.HUMAN_AUTH ||
+            operation == SessionOperation.DEVICE_BOOTSTRAP
+        if (authoritative) {
+            // Reserve the previous authority before waiting for an already running session.
+            // Further foreground callbacks and manual retries must not queue behind it.
+            if (!authorityMutex.tryLock()) {
+                emitOperationSkipped("AUTHORITY_FLOW_IN_PROGRESS")
+                return
+            }
+            try {
+                sessionMutex.withLock { runSessionOperation(operation, block) }
+            } finally {
+                authorityMutex.unlock()
+            }
+            return
+        }
+        if (authorityMutex.isLocked || !sessionMutex.tryLock()) {
+            emitOperationSkipped("SESSION_OPERATION_IN_PROGRESS")
+            return
+        }
+        try {
+            if (authorityMutex.isLocked) {
+                emitOperationSkipped("AUTHORITY_FLOW_IN_PROGRESS")
+                return
+            }
+            runSessionOperation(operation, block)
+        } finally {
+            sessionMutex.unlock()
+        }
+    }
+
+    private suspend fun runSessionOperation(operation: SessionOperation, block: suspend () -> Unit) {
+        activeSessionOperation = operation
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            if (operation == SessionOperation.DEVICE_BOOTSTRAP && continuationGrant != null) {
+                emitSessionEvent("AUTHORITY_FLOW_CANCELLED")
+                failBootstrap(DeviceBootstrapFailure.NETWORK_FAILURE)
+            }
+            throw cancelled
+        } finally {
+            activeSessionOperation = null
+        }
+    }
+
+    private fun emitOperationSkipped(reason: String) = emitSessionEvent(
+        "SESSION_MAINTENANCE_SKIPPED",
+        "reason" to reason,
+        "operation" to (activeSessionOperation?.name ?: "BUSY"),
+    )
+
+    private enum class SessionOperation { HUMAN_AUTH, DEVICE_BOOTSTRAP, CLIENT_SESSION, MAINTENANCE, MANUAL_SESSION }
 
     private suspend fun restoreOrEstablish(automatic: Boolean) {
         val stored = try {
@@ -771,6 +884,15 @@ class OnboardingCoordinator(
 
         if (stored == null) {
             emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "ABSENT")
+            if (
+                automatic && pendingTenantHint == null &&
+                bootstrapMutable.value !is DeviceBootstrapState.Established
+            ) {
+                // A tenantless challenge can remain pending after ACTIVE_TENANT_REQUIRED
+                // and conflict with the user's later explicit tenant selection.
+                emitSessionEvent("SESSION_MAINTENANCE_SKIPPED", "reason" to "AUTHENTICATION_REQUIRED")
+                return
+            }
             establishFreshSession(
                 automatic = automatic,
                 requestedTenantIdOverride = pendingTenantHint,
@@ -819,6 +941,7 @@ class OnboardingCoordinator(
             return
         }
 
+        activeSessionOperation = SessionOperation.CLIENT_SESSION
         val previousSession = clientSession
         transitionSession(ClientSessionState.Establishing, "SESSION_REFRESH")
         val publicKey = try {
@@ -838,6 +961,7 @@ class OnboardingCoordinator(
                 ?: (bootstrapMutable.value as? DeviceBootstrapState.Established)
                     ?.authority
                     ?.initialTenantId
+        emitSessionEvent("CLIENT_SESSION_START")
         emitSessionEvent(
             "CLIENT_SESSION_REFRESH_START",
             "automatic" to automatic.toString(),
@@ -1130,7 +1254,13 @@ class OnboardingCoordinator(
         is ClientSessionState.Failure -> "FAILURE"
     }
 
+    private fun failHuman(reason: HumanIdentityFailure, phase: String) {
+        emitSessionEvent("HUMAN_AUTH_REJECTED", "category" to reason.name, "phase" to phase)
+        mutable.value = engine.fail(reason)
+    }
+
     private fun failBootstrap(reason: DeviceBootstrapFailure) {
+        emitSessionEvent("DEVICE_BOOTSTRAP_REJECTED", "category" to reason.name)
         bootstrapMutable.value = DeviceBootstrapState.Failure(reason)
     }
 

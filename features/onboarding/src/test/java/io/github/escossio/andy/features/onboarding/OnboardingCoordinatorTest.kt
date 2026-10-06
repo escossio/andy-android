@@ -7,6 +7,9 @@ import io.github.escossio.andy.integrations.googleidentity.ProviderCredentialRes
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationAcquirer
 import io.github.escossio.andy.integrations.googleauthorization.GoogleAuthorizationResult
 import io.github.escossio.andy.integrations.googleauthorization.GoogleServerAuthorizationCode
+import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
+import io.github.escossio.andy.sdk.clientapi.HumanAuthTransport
+import io.github.escossio.andy.sdk.clientapi.TransportResponse
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedBootstrapResult
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientTenantDirectory
@@ -45,6 +48,10 @@ import io.github.escossio.andy.sdk.clientapi.GmailConnectionErrorCode
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionResult
 import io.github.escossio.andy.sdk.clientapi.GmailConnectionStatus
 import io.github.escossio.andy.sdk.clientapi.VerifyResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -654,7 +661,7 @@ class OnboardingCoordinatorTest {
 
         assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
         assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
-        assertEquals(1, session.startCalls)
+        assertEquals(0, session.startCalls)
         assertEquals(0, session.completeCalls)
     }
 
@@ -1088,6 +1095,427 @@ class OnboardingCoordinatorTest {
         assertSame(GmailConnectionState.Disconnected, coordinator.gmailState.value)
     }
 
+    @Test
+    fun providerResumeMaintenanceCannotRaceGoogleVerifyOrDeviceBootstrap() = runBlocking {
+        val providerGate = SuspensionGate()
+        val verifyGate = SuspensionGate()
+        val bootstrapGate = SuspensionGate()
+        val completeGate = SuspensionGate()
+        val events = mutableListOf<String>()
+        val human = object : FakeHumanClient() {
+            override suspend fun verifyAndContinue(challengeId: String, idToken: String): ContinuationResult {
+                verifyGate.pause()
+                return super.verifyAndContinue(challengeId, idToken)
+            }
+        }
+        val memberships = dualTenantMemberships()
+        val bootstrap = object : FakeBootstrapClient(
+            complete = DeviceBootstrapCompleteResult.Success(established(memberships = memberships)),
+        ) {
+            override suspend fun start(
+                grant: HumanAuthContinuationGrant,
+                publicKeySpkiB64Url: String,
+                canonicalDeviceName: String,
+                roles: Set<DeviceBootstrapRole>,
+            ): DeviceBootstrapChallengeResult {
+                bootstrapGate.pause()
+                return super.start(grant, publicKeySpkiB64Url, canonicalDeviceName, roles)
+            }
+            override suspend fun complete(challengeId: String, signatureB64Url: String): DeviceBootstrapCompleteResult {
+                completeGate.pause()
+                return super.complete(challengeId, signatureB64Url)
+            }
+        }
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val coordinator = coordinator(
+            true, human, bootstrap, session,
+            provider = object : GoogleCredentialAcquirer {
+                override suspend fun acquire(nonce: String): ProviderCredentialResult {
+                    providerGate.pause()
+                    return ProviderCredentialResult.Token("token-synthetic")
+                }
+            },
+            sessionTelemetry = { event, _ -> events += event },
+        )
+        val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
+
+        for (gate in listOf(providerGate, verifyGate, bootstrapGate, completeGate)) {
+            gate.entered.await()
+            repeat(3) {
+                coordinator.maintainClientSession()
+                coordinator.restoreClientSessionOnStartup()
+                coordinator.retryClientSession()
+                coordinator.continueWithExistingDevice()
+            }
+            assertEquals(0, session.startCalls)
+            assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
+            gate.release.complete(Unit)
+        }
+        auth.join()
+
+        assertEquals(1, bootstrap.startCalls)
+        assertEquals(1, bootstrap.completeCalls)
+        assertNull(coordinator.takeContinuationGrant())
+        assertEquals(ClientSessionState.AwaitingTenantSelection(memberships), coordinator.sessionState.value)
+        repeat(5) {
+            coordinator.maintainClientSession()
+            coordinator.restoreClientSessionOnStartup()
+            coordinator.retryClientSession()
+            coordinator.continueWithExistingDevice()
+        }
+        assertEquals(0, session.startCalls)
+        assertFalse(coordinator.selectTenantForSession("tnt_not_authorized"))
+        assertTrue(coordinator.selectTenantForSession(TARGET_TENANT))
+        assertEquals(listOf(TARGET_TENANT), session.requestedTenantIds)
+        assertEquals(1, session.startCalls)
+        repeat(5) { coordinator.maintainClientSession() }
+        assertEquals(1, session.startCalls)
+        val ordered = listOf("HUMAN_AUTH_START", "HUMAN_AUTH_PROVIDER_RETURNED", "HUMAN_AUTH_BACKEND_VALIDATED",
+            "DEVICE_BOOTSTRAP_START", "DEVICE_BOOTSTRAP_ACCEPTED", "TENANT_SELECTION_REQUIRED", "CLIENT_SESSION_START")
+        assertEquals(ordered, events.filter { it in ordered })
+        assertTrue(events.contains("SESSION_MAINTENANCE_SKIPPED"))
+    }
+
+    @Test
+    fun concurrentManualGoogleAndBootstrapRetriesDoNotCreateParallelFlows() = runBlocking {
+        val providerGate = SuspensionGate()
+        val bootstrapGate = SuspensionGate()
+        val human = FakeHumanClient()
+        val bootstrap = object : FakeBootstrapClient() {
+            override suspend fun start(
+                grant: HumanAuthContinuationGrant,
+                publicKeySpkiB64Url: String,
+                canonicalDeviceName: String,
+                roles: Set<DeviceBootstrapRole>,
+            ): DeviceBootstrapChallengeResult {
+                bootstrapGate.pause()
+                return super.start(grant, publicKeySpkiB64Url, canonicalDeviceName, roles)
+            }
+        }
+        val session = FakeSessionClient()
+        val coordinator = coordinator(true, human, bootstrap, session,
+            provider = object : GoogleCredentialAcquirer {
+                override suspend fun acquire(nonce: String): ProviderCredentialResult {
+                    providerGate.pause()
+                    return ProviderCredentialResult.Token("token-synthetic")
+                }
+            })
+        val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
+        providerGate.entered.await()
+        coordinator.continueWithGoogle()
+        coordinator.restartAuthentication()
+        coordinator.retryDeviceBootstrap()
+        coordinator.retryClientSession()
+        assertEquals(1, human.challengeCalls)
+        assertEquals(0, bootstrap.startCalls)
+        assertEquals(0, session.startCalls)
+        providerGate.release.complete(Unit)
+        bootstrapGate.entered.await()
+        repeat(3) {
+            coordinator.retryDeviceBootstrap()
+            coordinator.continueWithGoogle()
+            coordinator.maintainClientSession()
+        }
+        assertEquals(1, human.challengeCalls)
+        assertEquals(0, session.startCalls)
+        bootstrapGate.release.complete(Unit)
+        auth.join()
+        assertEquals(1, bootstrap.startCalls)
+        assertEquals(1, session.startCalls)
+    }
+
+    @Test
+    fun expectedHttp200IsParsedAndImmediatelyContinuesToDeviceBootstrap() = runBlocking {
+        val events = mutableListOf<String>()
+        val transport = object : HumanAuthTransport {
+            override suspend fun post(path: String, body: String): TransportResponse {
+                return if (path.endsWith("verify-and-continue")) {
+                    TransportResponse(200, """{"status":"HUMAN_IDENTITY_VALIDATED","human_identity_id":"$HUMAN_ID","continuation_grant":{"token":"$GRANT_TOKEN","purpose":"DEVICE_BOOTSTRAP","expires_at":"2030-01-01T00:05:00.842485Z"}}""")
+                } else {
+                    TransportResponse(201, """{"challenge_id":"synthetic-challenge","nonce":"synthetic-nonce","expires_at":"2030-01-01T00:00:00Z"}""")
+                }
+            }
+        }
+        val human = AttentionRouterHumanAuthClient("https://synthetic.invalid", transport,
+            verifyTelemetry = { events += it.name })
+        val bootstrap = FakeBootstrapClient()
+        val coordinator = coordinator(true, human, bootstrap,
+            sessionTelemetry = { event, _ -> events += event })
+        coordinator.continueWithGoogle()
+        assertEquals(1, bootstrap.startCalls)
+        assertEquals(1, bootstrap.completeCalls)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        assertNull(coordinator.takeContinuationGrant())
+        val ordered = listOf("HUMAN_AUTH_VERIFY_HTTP_SUCCESS", "HUMAN_AUTH_VERIFY_PARSE_SUCCESS",
+            "HUMAN_AUTH_BACKEND_VALIDATED", "DEVICE_BOOTSTRAP_START", "DEVICE_BOOTSTRAP_ACCEPTED", "CLIENT_SESSION_START")
+        assertEquals(ordered, events.filter { it in ordered })
+        assertFalse(events.contains("HUMAN_AUTH_VERIFY_PARSE_FAILURE"))
+    }
+
+    @Test
+    fun malformedHttp200DoesNotBootstrapOrTriggerAutomaticSessionRetry() = runBlocking {
+        val events = mutableListOf<String>()
+        val rejected = mutableListOf<Map<String, String>>()
+        val transport = object : HumanAuthTransport {
+            override suspend fun post(path: String, body: String) = if (path.endsWith("verify-and-continue")) {
+                TransportResponse(200, """{"status":"HUMAN_IDENTITY_VALIDATED","human_identity_id":"$HUMAN_ID","continuation_grant":null}""")
+            } else {
+                TransportResponse(201, """{"challenge_id":"synthetic-challenge","nonce":"synthetic-nonce","expires_at":"2030-01-01T00:00:00Z"}""")
+            }
+        }
+        val human = AttentionRouterHumanAuthClient("https://synthetic.invalid", transport,
+            verifyTelemetry = { events += it.name })
+        val bootstrap = FakeBootstrapClient()
+        val session = FakeSessionClient()
+        val coordinator = coordinator(true, human, bootstrap, session,
+            sessionTelemetry = { event, fields ->
+                events += event
+                if (event == "HUMAN_AUTH_REJECTED") rejected += fields
+            })
+        coordinator.continueWithGoogle()
+        repeat(5) { coordinator.maintainClientSession(); coordinator.restoreClientSessionOnStartup() }
+        assertEquals(0, bootstrap.startCalls)
+        assertEquals(0, session.startCalls)
+        assertTrue(coordinator.state.value is HumanIdentityState.Failure)
+        assertTrue(events.contains("HUMAN_AUTH_VERIFY_HTTP_SUCCESS"))
+        assertTrue(events.contains("HUMAN_AUTH_VERIFY_PARSE_FAILURE"))
+        assertEquals(listOf(mapOf("category" to "UNEXPECTED_RESPONSE", "phase" to "VERIFY")), rejected)
+        assertFalse(events.contains("HUMAN_AUTH_BACKEND_VALIDATED"))
+        assertFalse(events.contains("DEVICE_BOOTSTRAP_START"))
+        val rendered = events.toString()
+        listOf(GRANT_TOKEN, HUMAN_ID, DEVICE_ID, SESSION_TOKEN).forEach { assertFalse(rendered.contains(it)) }
+    }
+
+    @Test
+    fun pendingBootstrapFailureRequiresManualRetryAndNeverStartsAutomaticSession() = runBlocking {
+        val bootstrap = SequencedBootstrapClient()
+        val session = FakeSessionClient()
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session)
+        coordinator.continueWithGoogle()
+        repeat(5) { coordinator.maintainClientSession(); coordinator.restoreClientSessionOnStartup(); coordinator.retryClientSession() }
+        assertEquals(1, bootstrap.startCalls)
+        assertEquals(0, session.startCalls)
+        coordinator.retryDeviceBootstrap()
+        assertEquals(2, bootstrap.startCalls)
+        assertEquals(1, session.startCalls)
+    }
+
+    @Test
+    fun cancellationDuringProviderLeavesManualRecoveryAndNoAutomaticSession() = runBlocking {
+        val gate = SuspensionGate()
+        val session = FakeSessionClient()
+        val coordinator = coordinator(true, FakeHumanClient(), FakeBootstrapClient(), session,
+            provider = object : GoogleCredentialAcquirer {
+                override suspend fun acquire(nonce: String): ProviderCredentialResult {
+                    gate.pause()
+                    return ProviderCredentialResult.Token("token-synthetic")
+                }
+            })
+        val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
+        gate.entered.await()
+        auth.cancelAndJoin()
+        repeat(5) { coordinator.maintainClientSession() }
+        assertTrue(coordinator.state.value is HumanIdentityState.Failure)
+        assertEquals(0, session.startCalls)
+        coordinator.restartAuthentication()
+        coordinator.continueWithExistingDevice()
+        assertEquals(1, session.startCalls)
+    }
+
+    @Test
+    fun invalidPreviousTenantHintRequiresSelectionAfterGoogleBootstrap() = runBlocking {
+        val store = FakeSessionStore(sessionCredential(tenantId = "tnt_previous_synthetic"))
+        val memberships = dualTenantMemberships()
+        val session = TenantSwitchSessionClient(memberships = memberships + ClientTenantMembership("ctm_previous", "tnt_previous_synthetic", ClientTenantRole.OWNER))
+        val bootstrap = FakeBootstrapClient(complete = DeviceBootstrapCompleteResult.Success(established(memberships = memberships)))
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session, store)
+        coordinator.restoreClientSessionOnStartup()
+        coordinator.continueWithGoogle()
+        assertEquals(ClientSessionState.AwaitingTenantSelection(memberships), coordinator.sessionState.value)
+        assertEquals(0, session.startCalls)
+        assertTrue(coordinator.selectTenantForSession(TARGET_TENANT))
+        assertEquals(listOf(TARGET_TENANT), session.requestedTenantIds)
+    }
+
+    @Test
+    fun singleTenantAndValidPreviousHintRemainAutomaticAfterExclusiveBootstrap() = runBlocking {
+        for (reauth in listOf(false, true)) {
+            val memberships = if (reauth) dualTenantMemberships() else dualTenantMemberships().take(1)
+            val hint = if (reauth) TARGET_TENANT else SOURCE_TENANT
+            val gate = SuspensionGate()
+            val bootstrap = object : FakeBootstrapClient(
+                complete = DeviceBootstrapCompleteResult.Success(established(memberships = memberships)),
+            ) {
+                override suspend fun start(
+                    grant: HumanAuthContinuationGrant,
+                    publicKeySpkiB64Url: String,
+                    canonicalDeviceName: String,
+                    roles: Set<DeviceBootstrapRole>,
+                ): DeviceBootstrapChallengeResult {
+                    gate.pause()
+                    return super.start(grant, publicKeySpkiB64Url, canonicalDeviceName, roles)
+                }
+            }
+            val store = FakeSessionStore(if (reauth) sessionCredential(tenantId = hint) else null)
+            val session = TenantSwitchSessionClient(memberships = memberships)
+            val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session, store)
+            if (reauth) coordinator.restoreClientSessionOnStartup()
+            val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
+            gate.entered.await()
+            repeat(3) { coordinator.maintainClientSession(); coordinator.restoreClientSessionOnStartup() }
+            assertEquals(0, session.startCalls)
+            gate.release.complete(Unit)
+            auth.join()
+            assertEquals(1, bootstrap.startCalls)
+            assertEquals(listOf(hint), session.requestedTenantIds)
+            assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+            assertNull(coordinator.takeContinuationGrant())
+            repeat(3) { coordinator.maintainClientSession() }
+            assertEquals(1, session.startCalls)
+        }
+    }
+
+    @Test
+    fun automaticSessionFailureDoesNotRepeatChallengeUntilManualRetry() = runBlocking {
+        val session = FakeSessionClient(complete = ClientSessionCompleteResult.Failure(
+            ClientSessionErrorCode.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED))
+        val coordinator = coordinator(true, FakeHumanClient(), FakeBootstrapClient(), session,
+            store = FakeSessionStore(sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))))
+        coordinator.restoreClientSessionOnStartup()
+        assertEquals(1, session.startCalls)
+        repeat(5) { coordinator.maintainClientSession(); coordinator.restoreClientSessionOnStartup() }
+        assertEquals(1, session.startCalls)
+        coordinator.retryClientSession()
+        assertEquals(2, session.startCalls)
+    }
+
+    @Test
+    fun googleAdmissionWaitsForExistingMaintenanceAndBlocksFurtherSessionAttempts() = runBlocking {
+        val gate = SuspensionGate()
+        val human = FakeHumanClient()
+        val session = object : FakeSessionClient() {
+            override suspend fun start(publicKeySpkiB64Url: String, requestedTenantId: String?): ClientSessionChallengeResult {
+                val result = super.start(publicKeySpkiB64Url, requestedTenantId)
+                gate.pause()
+                return result
+            }
+        }
+        val coordinator = coordinator(true, human, FakeBootstrapClient(), session,
+            store = FakeSessionStore(sessionCredential(Instant.parse("2028-01-01T00:00:00Z"))))
+        val maintenance = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.maintainClientSession() }
+        gate.entered.await()
+        val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
+        assertTrue(auth.isActive)
+        assertEquals(0, human.challengeCalls)
+        repeat(3) { coordinator.maintainClientSession(); coordinator.retryClientSession(); coordinator.continueWithGoogle() }
+        assertEquals(1, session.startCalls)
+        gate.release.complete(Unit)
+        maintenance.join()
+        auth.join()
+        assertEquals(1, human.challengeCalls)
+        assertEquals(2, session.startCalls)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+    }
+
+    @Test
+    fun multipleMembershipsRequireSelectionEvenWithUnexpectedInitialTenantHint() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val bootstrap = FakeBootstrapClient(complete = DeviceBootstrapCompleteResult.Success(
+            established(memberships = memberships, initialTenantId = SOURCE_TENANT)))
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session)
+        coordinator.continueWithGoogle()
+        assertEquals(ClientSessionState.AwaitingTenantSelection(memberships), coordinator.sessionState.value)
+        assertEquals(0, session.startCalls)
+    }
+
+    @Test
+    fun cancellationAfterValidationPreservesGrantForExclusiveBootstrapRetry() = runBlocking {
+        val gate = SuspensionGate()
+        var attempts = 0
+        val bootstrap = object : FakeBootstrapClient() {
+            override suspend fun start(
+                grant: HumanAuthContinuationGrant,
+                publicKeySpkiB64Url: String,
+                canonicalDeviceName: String,
+                roles: Set<DeviceBootstrapRole>,
+            ): DeviceBootstrapChallengeResult {
+                attempts++
+                if (attempts == 1) gate.pause()
+                return super.start(grant, publicKeySpkiB64Url, canonicalDeviceName, roles)
+            }
+        }
+        val session = FakeSessionClient()
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session)
+        val auth = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.continueWithGoogle() }
+        gate.entered.await()
+        auth.cancelAndJoin()
+        assertTrue(coordinator.state.value is HumanIdentityState.Validated)
+        assertTrue(coordinator.bootstrapState.value is DeviceBootstrapState.Failure)
+        repeat(5) {
+            coordinator.maintainClientSession()
+            coordinator.restoreClientSessionOnStartup()
+            coordinator.retryClientSession()
+        }
+        assertEquals(1, attempts)
+        assertEquals(0, session.startCalls)
+        coordinator.retryDeviceBootstrap()
+        assertEquals(2, attempts)
+        assertEquals(1, bootstrap.completeCalls)
+        assertEquals(1, session.startCalls)
+        assertNull(coordinator.takeContinuationGrant())
+    }
+
+    @Test
+    fun automaticStartupWithoutStoredAuthorityCannotPoisonExplicitTenantChallenge() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val issued = TenantSwitchSessionClient(memberships)
+        var unboundPending = false
+        var attempts = 0
+        val session = object : ClientSessionClient by issued {
+            override suspend fun start(publicKeySpkiB64Url: String, requestedTenantId: String?): ClientSessionChallengeResult {
+                attempts++
+                if (requestedTenantId == null) {
+                    unboundPending = true
+                    return ClientSessionChallengeResult.Success(sessionChallenge())
+                }
+                if (unboundPending) return ClientSessionChallengeResult.Failure(ClientSessionErrorCode.CLIENT_SESSION_AUTHORITY_REJECTED)
+                return issued.start(publicKeySpkiB64Url, requestedTenantId)
+            }
+            override suspend fun complete(challengeId: String, signatureB64Url: String): ClientSessionCompleteResult =
+                if (unboundPending) ClientSessionCompleteResult.Failure(ClientSessionErrorCode.CLIENT_SESSION_ACTIVE_TENANT_REQUIRED)
+                else issued.complete(challengeId, signatureB64Url)
+        }
+        val bootstrap = FakeBootstrapClient(complete = DeviceBootstrapCompleteResult.Success(
+            established(memberships = memberships, initialTenantId = null)))
+        val events = mutableListOf<Pair<String, Map<String, String>>>()
+        val coordinator = coordinator(true, FakeHumanClient(), bootstrap, session,
+            sessionTelemetry = { event, fields -> events += event to fields })
+        repeat(5) { coordinator.restoreClientSessionOnStartup(); coordinator.maintainClientSession() }
+        assertEquals(0, attempts)
+        assertSame(ClientSessionState.Idle, coordinator.sessionState.value)
+        assertEquals(HumanIdentityState.Unauthenticated, coordinator.state.value)
+        assertTrue(events.any { it.first == "SESSION_MAINTENANCE_SKIPPED" && it.second["reason"] == "AUTHENTICATION_REQUIRED" })
+        coordinator.continueWithGoogle()
+        assertEquals(1, bootstrap.completeCalls)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.AwaitingTenantSelection)
+        repeat(5) { coordinator.maintainClientSession() }
+        assertEquals(0, attempts)
+        assertTrue(coordinator.selectTenantForSession(TARGET_TENANT))
+        assertEquals(1, attempts)
+        assertEquals(listOf(TARGET_TENANT), issued.requestedTenantIds)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        repeat(5) { coordinator.maintainClientSession() }
+        assertEquals(1, attempts)
+        assertFalse(unboundPending)
+    }
+
+    private class SuspensionGate {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        suspend fun pause() { entered.complete(Unit); release.await() }
+    }
+
     private fun coordinator(
         ready: Boolean,
         client: HumanAuthClient,
@@ -1098,6 +1526,9 @@ class OnboardingCoordinatorTest {
         gmailClient: GmailConnectionClient? = null,
         gmailAuthorization: GoogleAuthorizationAcquirer? = null,
         sessionTelemetry: (String, Map<String, String>) -> Unit = { _, _ -> },
+        provider: GoogleCredentialAcquirer = object : GoogleCredentialAcquirer {
+            override suspend fun acquire(nonce: String) = ProviderCredentialResult.Token("token-synthetic")
+        },
     ) = OnboardingCoordinator(
         ready = ready,
         config = OnboardingConfiguration(
@@ -1106,10 +1537,7 @@ class OnboardingCoordinatorTest {
             "Synthetic Android",
         ),
         client = client,
-        provider = object : GoogleCredentialAcquirer {
-            override suspend fun acquire(nonce: String) =
-                ProviderCredentialResult.Token("token-synthetic")
-        },
+        provider = provider,
         bootstrapClient = bootstrapClient,
         sessionClient = sessionClient,
         gmailClient = gmailClient,
@@ -1183,7 +1611,7 @@ class OnboardingCoordinatorTest {
         }
     }
 
-    private class FakeHumanClient(
+    private open class FakeHumanClient(
         private val challenge: ChallengeResult = ChallengeResult.Success(
             GoogleChallenge(
                 "hac_examplechallenge123456789",
