@@ -1,0 +1,65 @@
+import json
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW_PATH = ROOT / ".github/workflows/signed-debug-apk.yml"
+FRONTIER_PATH = ROOT / ".github/architecture/frontiers/android-build-versioning-v1.json"
+
+
+class SignedDebugWorkflowPolicyTests(unittest.TestCase):
+    def workflow(self) -> str:
+        return WORKFLOW_PATH.read_text()
+
+    def sections(self) -> tuple[str, str]:
+        text = self.workflow()
+        build = text.split("  build-candidate:\n", 1)[1].split("  sign-candidate:\n", 1)[0]
+        sign = text.split("  sign-candidate:\n", 1)[1]
+        return build, sign
+
+    def test_build_versioning_frontier_is_exact(self):
+        manifest = json.loads(FRONTIER_PATH.read_text())
+        self.assertEqual(manifest["frontier_id"], "android-build-versioning-v1")
+        self.assertEqual(manifest["branch"], "feat/android-build-versioning-v1")
+        self.assertEqual(manifest["allowed_paths"], ["app/build.gradle.kts"])
+        self.assertEqual(manifest["required_artifacts"], ["app/build.gradle.kts"])
+
+    def test_candidate_build_is_owner_dispatched_and_secret_free(self):
+        build, _ = self.sections()
+        self.assertIn("github.actor == github.repository_owner", build)
+        self.assertIn("persist-credentials: false", build)
+        self.assertIn("test \"$(git rev-parse HEAD)\" = \"$CANDIDATE_SHA\"", build)
+        self.assertIn("-PandyVersionCode=", build)
+        self.assertIn("-PandyVersionName=", build)
+        self.assertNotIn("secrets.", build)
+        self.assertNotIn("ANDY_SIGNING_", build)
+
+    def test_signing_job_never_executes_candidate_code(self):
+        _, sign = self.sections()
+        self.assertIn("needs: build-candidate", sign)
+        self.assertIn("github.actor == github.repository_owner", sign)
+        self.assertNotIn("actions/checkout", sign)
+        self.assertNotIn("./gradlew", sign)
+        self.assertNotIn("git ", sign)
+
+    def test_signing_job_uses_only_stable_secret_boundary(self):
+        _, sign = self.sections()
+        for secret in (
+            "secrets.ANDY_SIGNING_KEYSTORE_B64",
+            "secrets.ANDY_SIGNING_ALIAS",
+            "secrets.ANDY_SIGNING_STORE_PASSWORD",
+            "secrets.ANDY_SIGNING_KEY_PASSWORD",
+        ):
+            self.assertIn(secret, sign)
+        self.assertIn(
+            "6e72dda8780cc65728b3d7183234ddf8f32c600c41f23468350b6f0dd9d37677",
+            sign,
+        )
+        self.assertIn("apksigner", sign)
+        self.assertIn("zipalign", sign)
+        self.assertIn("name: andy-debug-apk-signed", sign)
+
+
+if __name__ == "__main__":
+    unittest.main()
