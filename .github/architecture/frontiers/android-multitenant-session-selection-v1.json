@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-multitenant-session-selection-v1",
+  "branch": "feat/android-multitenant-session-selection-v1",
+  "allowed_paths": [
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ClientSessionState.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt"
+  ],
+  "required_artifacts": [
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ClientSessionState.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinatorTest.kt"
+  ],
+  "forbidden_content_patterns": [
+    "retrofit",
+    "ktor-client",
+    "dagger",
+    "hilt",
+    "androidx\\.room",
+    "androidx\\.datastore",
+    "firebase",
+    "androidx\\.work",
+    "SharedPreferences",
+    "HttpURLConnection",
+    "java\\.net\\.",
+    "WebView"
+  ]
+}
