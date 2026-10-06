@@ -1,10 +1,12 @@
 package io.github.escossio.andy.sdk.clientapi
 
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import io.github.escossio.andy.core.humanidentity.HumanIdentityReference
 import java.time.Instant
+import java.util.logging.Logger
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -28,15 +30,39 @@ data class TransportResponse(val statusCode:Int,val body:String?)
 interface HumanAuthTransport { suspend fun post(path:String,body:String):TransportResponse }
 interface HumanAuthClient { suspend fun requestChallenge():ChallengeResult; suspend fun verify(challengeId:String,idToken:String):VerifyResult; suspend fun verifyAndContinue(challengeId:String,idToken:String):ContinuationResult }
 
-class AttentionRouterHumanAuthClient(private val baseUrl:String,private val transport:HumanAuthTransport=OkHttpHumanAuthTransport(baseUrl)):HumanAuthClient {
- override suspend fun requestChallenge()=try { val r=transport.post(PATH,"{}");if(r.statusCode==201) r.body?.let(::challenge)?:ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else ChallengeResult.Failure(error(r.body)) } catch(_:Exception){ChallengeResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
+enum class HumanAuthVerifyEvent {
+ HUMAN_AUTH_VERIFY_HTTP_SUCCESS,
+ HUMAN_AUTH_VERIFY_PARSE_SUCCESS,
+ HUMAN_AUTH_VERIFY_PARSE_FAILURE,
+}
+
+class AttentionRouterHumanAuthClient(
+ private val baseUrl:String,
+ private val transport:HumanAuthTransport=OkHttpHumanAuthTransport(baseUrl),
+ private val verifyTelemetry:(HumanAuthVerifyEvent)->Unit={ event ->
+  Logger.getLogger("AndySecureSession").info("event=${event.name}")
+ },
+):HumanAuthClient {
+ override suspend fun requestChallenge()=try { val r=transport.post(PATH,"{}");if(r.statusCode==201) r.body?.let(::challenge)?:ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else ChallengeResult.Failure(error(r.body)) } catch(cancelled:CancellationException){throw cancelled} catch(_:Exception){ChallengeResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
  override suspend fun verify(challengeId:String,idToken:String):VerifyResult {
   if(challengeId.isBlank()||idToken.isBlank()) return VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE)
-  return try { val r=transport.post("$PATH/$challengeId/verify",buildJsonObject{put("id_token",idToken)}.toString());if(r.statusCode==200) r.body?.let(::validated)?:VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else VerifyResult.Failure(error(r.body)) } catch(_:Exception){VerifyResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
+  return try { val r=transport.post("$PATH/$challengeId/verify",buildJsonObject{put("id_token",idToken)}.toString());if(r.statusCode==200) r.body?.let(::validated)?:VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else VerifyResult.Failure(error(r.body)) } catch(cancelled:CancellationException){throw cancelled} catch(_:Exception){VerifyResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
  }
  override suspend fun verifyAndContinue(challengeId:String,idToken:String):ContinuationResult {
   if(challengeId.isBlank()||idToken.isBlank()) return ContinuationResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE)
-  return try { val r=transport.post("$PATH/$challengeId/verify-and-continue",buildJsonObject{put("id_token",idToken)}.toString());if(r.statusCode==200) continued(r.body) else ContinuationResult.Failure(error(r.body)) } catch(_:Exception){ContinuationResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
+  return try {
+   val response=transport.post("$PATH/$challengeId/verify-and-continue",buildJsonObject{put("id_token",idToken)}.toString())
+   if(response.statusCode!=200) return ContinuationResult.Failure(error(response.body))
+   emitVerifyEvent(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_HTTP_SUCCESS)
+   val result=continued(response.body)
+   emitVerifyEvent(if(result is ContinuationResult.Success) HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_SUCCESS else HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_FAILURE)
+   result
+  } catch(cancelled:CancellationException){throw cancelled} catch(_:Exception){ContinuationResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
+ }
+ private fun emitVerifyEvent(event:HumanAuthVerifyEvent) {
+  try { verifyTelemetry(event) } catch(_:Exception) {
+   // Telemetry receives only a fixed event and cannot change authentication behavior.
+  }
  }
  private fun challenge(body:String):ChallengeResult { val o=obj(body)?:return ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE);if(o.keys!=setOf("challenge_id","nonce","expires_at"))return ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE);val a=o.str("challenge_id");val b=o.str("nonce");val c=o.str("expires_at");return if(a==null||b==null||c==null)ChallengeResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) else ChallengeResult.Success(GoogleChallenge(a,b,c)) }
  private fun validated(body:String):VerifyResult { val o=obj(body)?:return VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE);val id=o.str("human_identity_id");return if(o.keys==setOf("status","human_identity_id")&&o.str("status")=="HUMAN_IDENTITY_VALIDATED"&&id!=null)VerifyResult.Success(HumanIdentityValidated(HumanIdentityReference(id))) else VerifyResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE) }

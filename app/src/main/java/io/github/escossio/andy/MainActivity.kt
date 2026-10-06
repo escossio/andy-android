@@ -160,22 +160,22 @@ private fun AndyBootstrap(
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             },
             onContinue = {
-                scope.launch { coordinator.continueWithGoogle() }
+                viewModel.continueWithGoogle()
             },
             onContinueSession = {
-                scope.launch { coordinator.continueWithExistingDevice() }
+                viewModel.continueWithExistingDevice()
             },
             onRetryHuman = {
-                scope.launch { coordinator.restartAuthentication() }
+                viewModel.restartAuthentication()
             },
             onRetryBootstrap = {
-                scope.launch { coordinator.retryDeviceBootstrap() }
+                viewModel.retryDeviceBootstrap()
             },
             onRetrySession = {
-                scope.launch { coordinator.retryClientSession() }
+                viewModel.retryClientSession()
             },
             onSelectTenant = { tenantId ->
-                scope.launch { coordinator.selectTenantForSession(tenantId) }
+                viewModel.selectTenantForSession(tenantId)
             },
             onShareLocation = {
                 locationPermissionLauncher.launch(

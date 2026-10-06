@@ -1,6 +1,7 @@
 package io.github.escossio.andy.sdk.clientapi
 
 import io.github.escossio.andy.core.humanidentity.HumanIdentityReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,6 +42,101 @@ class AttentionRouterHumanAuthClientTest {
         assertEquals(HumanAuthContinuationPurpose.DEVICE_BOOTSTRAP, continuation.grant.purpose)
         assertEquals(java.time.Instant.parse("2030-01-01T00:05:00Z"), continuation.grant.expiresAt)
         assertFalse(continuation.grant.toString().contains(GRANT_TOKEN))
+    }
+
+    @Test fun verifyAndContinue200ParsesBackendSerializedContractBeforeReportingParseSuccess() = runBlocking {
+        val events = mutableListOf<HumanAuthVerifyEvent>()
+        // Synthetic fixture with the required response fields and UTC microseconds.
+        val body = """
+            {"continuation_grant":{"expires_at":"2030-01-01T00:05:00.842485Z","purpose":"DEVICE_BOOTSTRAP","token":"$GRANT_TOKEN"},"human_identity_id":"$HUMAN_ID","status":"HUMAN_IDENTITY_VALIDATED"}
+        """.trimIndent()
+        val result = client(TransportResponse(200, body), events::add)
+            .verifyAndContinue(CHALLENGE_ID, TOKEN)
+
+        assertTrue(result is ContinuationResult.Success)
+        assertEquals(
+            java.time.Instant.parse("2030-01-01T00:05:00.842485Z"),
+            (result as ContinuationResult.Success).continuation.grant.expiresAt,
+        )
+        assertEquals(successEvents(), events)
+        assertSafeVerifyEvents(events)
+    }
+
+    @Test fun verifyAndContinue200AcceptsEquivalentUtcOffsetTimestamp() = runBlocking {
+        val events = mutableListOf<HumanAuthVerifyEvent>()
+        val body = continuedJson().replace("2030-01-01T00:05:00Z", "2030-01-01T00:05:00.842485+00:00")
+        val result = client(TransportResponse(200, body), events::add)
+            .verifyAndContinue(CHALLENGE_ID, TOKEN)
+
+        assertTrue(result is ContinuationResult.Success)
+        assertEquals(java.time.Instant.parse("2030-01-01T00:05:00.842485Z"), (result as ContinuationResult.Success).continuation.grant.expiresAt)
+        assertEquals(successEvents(), events)
+    }
+
+    @Test fun verifyAndContinue200RejectsNullRequiredFieldsAndReportsParseFailure() = runBlocking {
+        val invalidBodies = listOf(
+            continuedJson().replace("\"HUMAN_IDENTITY_VALIDATED\"", "null"),
+            continuedJson().replace("\"$HUMAN_ID\"", "null"),
+            "{\"status\":\"HUMAN_IDENTITY_VALIDATED\",\"human_identity_id\":\"$HUMAN_ID\",\"continuation_grant\":null}",
+            continuedJson().replace("\"$GRANT_TOKEN\"", "null"),
+            continuedJson().replace("\"DEVICE_BOOTSTRAP\"", "null"),
+            continuedJson().replace("\"2030-01-01T00:05:00Z\"", "null"),
+            null,
+            "",
+            "not-json",
+        )
+        for (body in invalidBodies) {
+            val events = mutableListOf<HumanAuthVerifyEvent>()
+            val result = client(TransportResponse(200, body), events::add)
+                .verifyAndContinue(CHALLENGE_ID, TOKEN)
+
+            assertEquals(ContinuationResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE), result)
+            assertEquals(
+                listOf(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_HTTP_SUCCESS, HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_FAILURE),
+                events,
+            )
+            assertSafeVerifyEvents(events)
+        }
+    }
+
+    @Test fun unsuccessfulVerifyHttpResponseDoesNotReportHttpOrParseSuccess() = runBlocking {
+        val events = mutableListOf<HumanAuthVerifyEvent>()
+        val result = client(TransportResponse(401, "{\"code\":\"HUMAN_AUTH_CREDENTIAL_REJECTED\"}"), events::add)
+            .verifyAndContinue(CHALLENGE_ID, TOKEN)
+
+        assertEquals(ContinuationResult.Failure(HumanAuthErrorCode.HUMAN_AUTH_CREDENTIAL_REJECTED), result)
+        assertTrue(events.isEmpty())
+    }
+
+    @Test fun failingVerifyTelemetryDoesNotChangeSuccessfulParsing() = runBlocking {
+        val result = client(TransportResponse(200, continuedJson())) {
+            throw IllegalStateException("synthetic telemetry failure")
+        }.verifyAndContinue(CHALLENGE_ID, TOKEN)
+
+        assertTrue(result is ContinuationResult.Success)
+    }
+
+    @Test fun transportCancellationPropagatesInsteadOfBecomingNetworkFailure() = runBlocking {
+        val cancelled = CancellationException("synthetic cancellation")
+        val events = mutableListOf<HumanAuthVerifyEvent>()
+        val client = AttentionRouterHumanAuthClient("https://synthetic.invalid", object : HumanAuthTransport {
+            override suspend fun post(path: String, body: String): TransportResponse = throw cancelled
+        }, events::add)
+        val operations: List<suspend () -> Any> = listOf(
+            { client.requestChallenge() },
+            { client.verify(CHALLENGE_ID, TOKEN) },
+            { client.verifyAndContinue(CHALLENGE_ID, TOKEN) },
+        )
+
+        for (operation in operations) {
+            try {
+                operation()
+                fail("Cancellation must propagate")
+            } catch (actual: CancellationException) {
+                assertTrue(actual === cancelled)
+            }
+        }
+        assertTrue(events.isEmpty())
     }
 
     @Test fun malformedContinuationGrantFailsClosed() = runBlocking {
@@ -103,7 +199,17 @@ class AttentionRouterHumanAuthClientTest {
         }
     }
 
-    private fun client(response: TransportResponse) = AttentionRouterHumanAuthClient("https://synthetic.invalid", object : HumanAuthTransport { override suspend fun post(path: String, body: String) = response })
+    private fun client(
+        response: TransportResponse,
+        verifyTelemetry: (HumanAuthVerifyEvent) -> Unit = {},
+    ) = AttentionRouterHumanAuthClient("https://synthetic.invalid", object : HumanAuthTransport { override suspend fun post(path: String, body: String) = response }, verifyTelemetry)
+    private fun successEvents() = listOf(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_HTTP_SUCCESS, HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_SUCCESS)
+    private fun assertSafeVerifyEvents(events: List<HumanAuthVerifyEvent>) {
+        val serialized = events.joinToString()
+        for (sensitive in listOf(CHALLENGE_ID, HUMAN_ID, TOKEN, GRANT_TOKEN)) {
+            assertFalse(serialized.contains(sensitive))
+        }
+    }
     private fun challenge() = GoogleChallenge(CHALLENGE_ID, NONCE, "2030-01-01T00:00:00Z")
     private fun challengeJson() = "{\"challenge_id\":\"$CHALLENGE_ID\",\"nonce\":\"$NONCE\",\"expires_at\":\"2030-01-01T00:00:00Z\"}"
     private fun continuedJson() = "{\"status\":\"HUMAN_IDENTITY_VALIDATED\",\"human_identity_id\":\"$HUMAN_ID\",\"continuation_grant\":{\"token\":\"$GRANT_TOKEN\",\"purpose\":\"DEVICE_BOOTSTRAP\",\"expires_at\":\"2030-01-01T00:05:00Z\"}}"

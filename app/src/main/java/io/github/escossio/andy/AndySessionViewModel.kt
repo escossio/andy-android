@@ -33,7 +33,9 @@ import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterDeviceBootstrapClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterGmailConnectionClient
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -55,7 +57,6 @@ class AndySessionViewModel private constructor(
     private val locationProvider = AndroidForegroundLocationProvider(applicationContext)
     private val sessionStore = AndroidKeystoreClientSessionStore(applicationContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var foregroundSessionMaintenanceJob: Job? = null
 
     val approvalCoordinator = ApprovalCoordinator(
         client = AttentionRouterClientApprovalClient(
@@ -110,6 +111,17 @@ class AndySessionViewModel private constructor(
         sessionStore = sessionStore,
     )
 
+    private val lifecycleRunner = SessionLifecycleRunner(
+        scope = scope,
+        maintainSession = { coordinator.maintainClientSession() },
+        refreshConnected = {
+            if (coordinator.sessionState.value is ClientSessionState.Connected) {
+                approvalCoordinator.refresh()
+                commandCoordinator.refresh()
+            }
+        },
+    )
+
     init {
         scope.launch {
             coordinator.restoreClientSessionOnStartup()
@@ -117,24 +129,35 @@ class AndySessionViewModel private constructor(
     }
 
     fun enterForeground() {
-        foregroundSessionMaintenanceJob?.cancel()
-        foregroundSessionMaintenanceJob = scope.launch {
-            coordinator.maintainClientSession()
-            if (coordinator.sessionState.value is ClientSessionState.Connected) {
-                approvalCoordinator.refresh()
-                commandCoordinator.refresh()
-            }
-
-            while (isActive) {
-                delay(SESSION_MAINTENANCE_INTERVAL_MILLIS)
-                coordinator.maintainClientSession()
-            }
-        }
+        lifecycleRunner.enterForeground()
     }
 
     fun leaveForeground() {
-        foregroundSessionMaintenanceJob?.cancel()
-        foregroundSessionMaintenanceJob = null
+        lifecycleRunner.leaveForeground()
+    }
+
+    fun continueWithGoogle() = lifecycleRunner.launchAuthoritative {
+        coordinator.continueWithGoogle()
+    }
+
+    fun continueWithExistingDevice() = lifecycleRunner.launchAuthoritative {
+        coordinator.continueWithExistingDevice()
+    }
+
+    fun restartAuthentication() = lifecycleRunner.launchAuthoritative {
+        coordinator.restartAuthentication()
+    }
+
+    fun retryDeviceBootstrap() = lifecycleRunner.launchAuthoritative {
+        coordinator.retryDeviceBootstrap()
+    }
+
+    fun retryClientSession() = lifecycleRunner.launchAuthoritative {
+        coordinator.retryClientSession()
+    }
+
+    fun selectTenantForSession(tenantId: String) = lifecycleRunner.launchAuthoritative {
+        coordinator.selectTenantForSession(tenantId)
     }
 
     fun refreshApprovalsIfConnected() {
@@ -204,7 +227,6 @@ class AndySessionViewModel private constructor(
 
     companion object {
         private const val LOG_TAG = "AndyDeviceIdentity"
-        private const val SESSION_MAINTENANCE_INTERVAL_MILLIS = 30_000L
 
         fun factory(context: Context): ViewModelProvider.Factory {
             val applicationContext = context.applicationContext
@@ -216,6 +238,43 @@ class AndySessionViewModel private constructor(
                 }
             }
         }
+    }
+}
+
+/** The retained ViewModel owns auth; foreground callbacks only own maintenance. */
+internal class SessionLifecycleRunner(
+    private val scope: CoroutineScope,
+    private val maintainSession: suspend () -> Unit,
+    private val refreshConnected: suspend () -> Unit = {},
+    private val authoritativeDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
+) {
+    private var foregroundJob: Job? = null
+    private var authoritativeJob: Job? = null
+
+    fun enterForeground() {
+        leaveForeground()
+        foregroundJob = scope.launch {
+            maintainSession()
+            refreshConnected()
+            while (isActive) {
+                delay(30_000L)
+                maintainSession()
+            }
+        }
+    }
+
+    fun leaveForeground() {
+        foregroundJob?.cancel()
+        foregroundJob = null
+    }
+
+    @Synchronized
+    fun launchAuthoritative(action: suspend () -> Unit): Job? {
+        if (authoritativeJob?.isActive == true) return null
+        val job = scope.launch(authoritativeDispatcher, start = CoroutineStart.LAZY) { action() }
+        authoritativeJob = job
+        job.start()
+        return job
     }
 }
 
