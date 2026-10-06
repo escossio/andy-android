@@ -208,3 +208,52 @@ jobs:
         if: always()
         shell: bash
         run: rm -f "$RUNNER_TEMP/andy-dev.keystore"
+
+  publish-firebase:
+    name: publish-firebase-app-distribution
+    needs: sign-candidate
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout trusted workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download verified signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: andy-debug-apk-signed
+          path: ${{ runner.temp }}/andy-debug-apk-signed
+
+      - name: Set up Node.js for Firebase CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned Firebase CLI
+        shell: bash
+        run: npm install --global firebase-tools@15.32.1
+
+      - name: Authenticate to Firebase through GitHub OIDC
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: andy-android-a30c9
+          workload_identity_provider: projects/410434637355/locations/global/workloadIdentityPools/github-andy-android/providers/signed-debug
+          service_account: github-app-distribution@andy-android-a30c9.iam.gserviceaccount.com
+
+      - name: Publish signed APK to Firebase App Distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          firebase appdistribution:distribute \
+            "$RUNNER_TEMP/andy-debug-apk-signed/andy-debug.apk" \
+            --project andy-android-a30c9 \
+            --app 1:410434637355:android:d83d216b490e43a039646e \
+            --release-notes "GitHub Actions build $GITHUB_SHA" \
+            --non-interactive
