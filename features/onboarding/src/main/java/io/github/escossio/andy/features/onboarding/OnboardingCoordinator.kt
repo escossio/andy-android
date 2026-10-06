@@ -706,6 +706,10 @@ class OnboardingCoordinator(
 
         if (stored == null) {
             emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "ABSENT")
+            if (automatic && state.value == HumanIdentityState.Unauthenticated) {
+                transitionSession(ClientSessionState.Idle, "NO_STORED_SESSION")
+                return
+            }
             establishFreshSession(
                 automatic = automatic,
                 trigger = SessionRefreshTrigger.NO_STORED_SESSION,
