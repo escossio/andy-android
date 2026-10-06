@@ -227,7 +227,7 @@ class OnboardingCoordinator(
                 config.googleWebClientId.isBlank() ||
                 config.canonicalDeviceName.isBlank()
             ) {
-                mutable.value = engine.fail(HumanIdentityFailure.CONFIGURATION_MISSING)
+                failHuman(HumanIdentityFailure.CONFIGURATION_MISSING, "CONFIGURATION")
                 return@withSessionOperation
             }
 
@@ -236,7 +236,7 @@ class OnboardingCoordinator(
             val challenge = when (val result = client.requestChallenge()) {
                 is ChallengeResult.Success -> result.challenge
                 is ChallengeResult.Failure -> {
-                    mutable.value = engine.fail(result.error.failure())
+                    failHuman(result.error.failure(), "CHALLENGE")
                     return@withSessionOperation
                 }
             }
@@ -246,9 +246,9 @@ class OnboardingCoordinator(
             emitSessionEvent("HUMAN_AUTH_PROVIDER_RETURNED")
             when (credential) {
                 ProviderCredentialResult.Cancelled ->
-                    mutable.value = engine.fail(HumanIdentityFailure.PROVIDER_CANCELLED)
+                    failHuman(HumanIdentityFailure.PROVIDER_CANCELLED, "PROVIDER")
                 ProviderCredentialResult.Unavailable ->
-                    mutable.value = engine.fail(HumanIdentityFailure.PROVIDER_UNAVAILABLE)
+                    failHuman(HumanIdentityFailure.PROVIDER_UNAVAILABLE, "PROVIDER")
                 is ProviderCredentialResult.Token -> {
                     mutable.value = engine.providerCredentialReceived()
                     when (
@@ -267,7 +267,7 @@ class OnboardingCoordinator(
                             continueDeviceBootstrap()
                         }
                         is ContinuationResult.Failure ->
-                            mutable.value = engine.fail(continued.error.failure())
+                            failHuman(continued.error.failure(), "VERIFY")
                     }
                 }
             }
@@ -1243,6 +1243,11 @@ class OnboardingCoordinator(
         is ClientSessionState.AwaitingTenantSelection -> "AWAITING_TENANT_SELECTION"
         is ClientSessionState.Connected -> "CONNECTED"
         is ClientSessionState.Failure -> "FAILURE"
+    }
+
+    private fun failHuman(reason: HumanIdentityFailure, phase: String) {
+        emitSessionEvent("HUMAN_AUTH_REJECTED", "category" to reason.name, "phase" to phase)
+        mutable.value = engine.fail(reason)
     }
 
     private fun failBootstrap(reason: DeviceBootstrapFailure) {

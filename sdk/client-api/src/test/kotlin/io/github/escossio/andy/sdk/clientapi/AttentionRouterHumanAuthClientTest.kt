@@ -136,7 +136,20 @@ class AttentionRouterHumanAuthClientTest {
                 assertTrue(actual === cancelled)
             }
         }
-        assertTrue(events.isEmpty())
+        assertEquals(listOf(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_CANCELLED), events)
+        assertSafeVerifyEvents(events)
+    }
+
+    @Test fun verifyTransportFailureIsDistinctFromParsingAndRedactsExceptionDetails() = runBlocking {
+        val events = mutableListOf<HumanAuthVerifyEvent>()
+        val client = AttentionRouterHumanAuthClient("https://synthetic.invalid", object : HumanAuthTransport {
+            override suspend fun post(path: String, body: String): TransportResponse =
+                throw java.io.IOException("synthetic error containing $TOKEN and $GRANT_TOKEN")
+        }, events::add)
+        assertEquals(ContinuationResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE),
+            client.verifyAndContinue(CHALLENGE_ID, TOKEN))
+        assertEquals(listOf(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_TRANSPORT_FAILURE), events)
+        assertSafeVerifyEvents(events)
     }
 
     @Test fun malformedContinuationGrantFailsClosed() = runBlocking {

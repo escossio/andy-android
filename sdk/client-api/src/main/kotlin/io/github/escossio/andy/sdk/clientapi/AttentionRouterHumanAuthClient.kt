@@ -34,6 +34,8 @@ enum class HumanAuthVerifyEvent {
  HUMAN_AUTH_VERIFY_HTTP_SUCCESS,
  HUMAN_AUTH_VERIFY_PARSE_SUCCESS,
  HUMAN_AUTH_VERIFY_PARSE_FAILURE,
+ HUMAN_AUTH_VERIFY_TRANSPORT_FAILURE,
+ HUMAN_AUTH_VERIFY_CANCELLED,
 }
 
 class AttentionRouterHumanAuthClient(
@@ -50,14 +52,20 @@ class AttentionRouterHumanAuthClient(
  }
  override suspend fun verifyAndContinue(challengeId:String,idToken:String):ContinuationResult {
   if(challengeId.isBlank()||idToken.isBlank()) return ContinuationResult.Failure(HumanAuthErrorCode.UNEXPECTED_RESPONSE)
-  return try {
-   val response=transport.post("$PATH/$challengeId/verify-and-continue",buildJsonObject{put("id_token",idToken)}.toString())
-   if(response.statusCode!=200) return ContinuationResult.Failure(error(response.body))
-   emitVerifyEvent(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_HTTP_SUCCESS)
-   val result=continued(response.body)
-   emitVerifyEvent(if(result is ContinuationResult.Success) HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_SUCCESS else HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_FAILURE)
-   result
-  } catch(cancelled:CancellationException){throw cancelled} catch(_:Exception){ContinuationResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)}
+  val response=try {
+   transport.post("$PATH/$challengeId/verify-and-continue",buildJsonObject{put("id_token",idToken)}.toString())
+  } catch(cancelled:CancellationException) {
+   emitVerifyEvent(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_CANCELLED)
+   throw cancelled
+  } catch(_:Exception) {
+   emitVerifyEvent(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_TRANSPORT_FAILURE)
+   return ContinuationResult.Failure(HumanAuthErrorCode.NETWORK_FAILURE)
+  }
+  if(response.statusCode!=200) return ContinuationResult.Failure(error(response.body))
+  emitVerifyEvent(HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_HTTP_SUCCESS)
+  val result=continued(response.body)
+  emitVerifyEvent(if(result is ContinuationResult.Success) HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_SUCCESS else HumanAuthVerifyEvent.HUMAN_AUTH_VERIFY_PARSE_FAILURE)
+  return result
  }
  private fun emitVerifyEvent(event:HumanAuthVerifyEvent) {
   try { verifyTelemetry(event) } catch(_:Exception) {

@@ -1255,6 +1255,7 @@ class OnboardingCoordinatorTest {
     @Test
     fun malformedHttp200DoesNotBootstrapOrTriggerAutomaticSessionRetry() = runBlocking {
         val events = mutableListOf<String>()
+        val rejected = mutableListOf<Map<String, String>>()
         val transport = object : HumanAuthTransport {
             override suspend fun post(path: String, body: String) = if (path.endsWith("verify-and-continue")) {
                 TransportResponse(200, """{"status":"HUMAN_IDENTITY_VALIDATED","human_identity_id":"$HUMAN_ID","continuation_grant":null}""")
@@ -1267,7 +1268,10 @@ class OnboardingCoordinatorTest {
         val bootstrap = FakeBootstrapClient()
         val session = FakeSessionClient()
         val coordinator = coordinator(true, human, bootstrap, session,
-            sessionTelemetry = { event, _ -> events += event })
+            sessionTelemetry = { event, fields ->
+                events += event
+                if (event == "HUMAN_AUTH_REJECTED") rejected += fields
+            })
         coordinator.continueWithGoogle()
         repeat(5) { coordinator.maintainClientSession(); coordinator.restoreClientSessionOnStartup() }
         assertEquals(0, bootstrap.startCalls)
@@ -1275,6 +1279,7 @@ class OnboardingCoordinatorTest {
         assertTrue(coordinator.state.value is HumanIdentityState.Failure)
         assertTrue(events.contains("HUMAN_AUTH_VERIFY_HTTP_SUCCESS"))
         assertTrue(events.contains("HUMAN_AUTH_VERIFY_PARSE_FAILURE"))
+        assertEquals(listOf(mapOf("category" to "UNEXPECTED_RESPONSE", "phase" to "VERIFY")), rejected)
         assertFalse(events.contains("HUMAN_AUTH_BACKEND_VALIDATED"))
         assertFalse(events.contains("DEVICE_BOOTSTRAP_START"))
         val rendered = events.toString()
