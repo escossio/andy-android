@@ -45,6 +45,19 @@ class SignedDebugWorkflowPolicyTests(unittest.TestCase):
         self.assertIn('-PattentionRouterBaseUrl="$ATTENTION_ROUTER_BASE_URL"', build)
         self.assertIn('-PgoogleWebClientId="$GOOGLE_WEB_CLIENT_ID"', build)
 
+    def test_build_only_dispatch_skips_entire_firebase_job(self):
+        text = self.workflow()
+        inputs = text.split("jobs:", 1)[0]
+        self.assertIn("publish_firebase:", inputs)
+        option = inputs.split("publish_firebase:", 1)[1]
+        self.assertIn("type: boolean", option)
+        self.assertIn("default: true", option)
+        publish = text.split("  publish-firebase:\n", 1)[1]
+        self.assertIn("if: ${{ github.actor == github.repository_owner && inputs.publish_firebase }}", publish)
+        build, sign = self.sections()
+        self.assertNotIn("inputs.publish_firebase", build)
+        self.assertNotIn("inputs.publish_firebase", sign)
+
     def test_signing_job_never_executes_candidate_code(self):
         _, sign = self.sections()
         self.assertIn("needs: build-candidate", sign)
