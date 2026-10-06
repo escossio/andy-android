@@ -249,6 +249,76 @@ class OnboardingCoordinatorTest {
     }
 
     @Test
+    fun multiTenantBootstrapWaitsForExplicitTenantBeforeIssuingSession() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val bootstrap = FakeBootstrapClient(
+            complete = DeviceBootstrapCompleteResult.Success(
+                established(
+                    memberships = memberships,
+                    initialTenantId = null,
+                ),
+            ),
+        )
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            bootstrap,
+            session,
+        )
+
+        coordinator.continueWithGoogle()
+
+        assertEquals(
+            ClientSessionState.AwaitingTenantSelection(memberships),
+            coordinator.sessionState.value,
+        )
+        assertEquals(0, session.startCalls)
+        assertEquals(0, session.completeCalls)
+
+        assertTrue(coordinator.selectTenantForSession(TARGET_TENANT))
+
+        assertEquals(listOf(TARGET_TENANT), session.requestedTenantIds)
+        assertEquals(1, session.startCalls)
+        assertEquals(1, session.completeCalls)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(TARGET_TENANT, connected.bootstrap.activeTenantId)
+    }
+
+    @Test
+    fun googleReauthenticationPreservesPreviousTenantWhenStillAuthorized() = runBlocking {
+        val memberships = dualTenantMemberships()
+        val store = FakeSessionStore(sessionCredential(tenantId = TARGET_TENANT))
+        val bootstrap = FakeBootstrapClient(
+            complete = DeviceBootstrapCompleteResult.Success(
+                established(
+                    memberships = memberships,
+                    initialTenantId = null,
+                ),
+            ),
+        )
+        val session = TenantSwitchSessionClient(memberships = memberships)
+        val coordinator = coordinator(
+            true,
+            FakeHumanClient(),
+            bootstrap,
+            session,
+            store,
+        )
+
+        coordinator.restoreClientSessionOnStartup()
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+
+        coordinator.continueWithGoogle()
+
+        assertEquals(listOf(TARGET_TENANT), session.requestedTenantIds)
+        assertTrue(coordinator.sessionState.value is ClientSessionState.Connected)
+        val connected = coordinator.sessionState.value as ClientSessionState.Connected
+        assertEquals(TARGET_TENANT, connected.bootstrap.activeTenantId)
+        assertEquals(TARGET_TENANT, store.current?.tenantId)
+    }
+
+    @Test
     fun authenticatedBootstrapRetryReusesSameInMemorySession() = runBlocking {
         val human = FakeHumanClient()
         val bootstrap = FakeBootstrapClient()
@@ -1577,16 +1647,20 @@ class OnboardingCoordinatorTest {
             serverTime = Instant.parse("2030-01-01T00:08:00Z"),
         )
 
-        fun established(humanId: String = HUMAN_ID) = DeviceBootstrapEstablished(
-            humanIdentityId = humanId,
-            memberships = listOf(
+        fun established(
+            humanId: String = HUMAN_ID,
+            memberships: List<ClientTenantMembership> = listOf(
                 ClientTenantMembership(
                     "ctm_synthetic",
                     "tnt_synthetic",
                     ClientTenantRole.OWNER,
                 ),
             ),
-            initialTenantId = "tnt_synthetic",
+            initialTenantId: String? = memberships.singleOrNull()?.tenantId,
+        ) = DeviceBootstrapEstablished(
+            humanIdentityId = humanId,
+            memberships = memberships,
+            initialTenantId = initialTenantId,
             device = ClientDevice(
                 DEVICE_ID,
                 "sha256:" + "f".repeat(64),

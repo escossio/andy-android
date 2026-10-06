@@ -174,6 +174,9 @@ private fun AndyBootstrap(
             onRetrySession = {
                 scope.launch { coordinator.retryClientSession() }
             },
+            onSelectTenant = { tenantId ->
+                scope.launch { coordinator.selectTenantForSession(tenantId) }
+            },
             onShareLocation = {
                 locationPermissionLauncher.launch(
                     arrayOf(

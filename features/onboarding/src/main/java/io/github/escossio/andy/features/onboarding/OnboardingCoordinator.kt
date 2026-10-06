@@ -107,6 +107,7 @@ class OnboardingCoordinator(
     private var continuationGrant: HumanAuthContinuationGrant? = null
     private var validatedIdentity: HumanIdentityReference? = null
     private var clientSession: ClientSessionCredential? = null
+    private var pendingTenantHint: String? = null
     private val deviceReady = ready
     private val sessionMutex = Mutex()
     private val gmailMutex = Mutex()
@@ -134,6 +135,7 @@ class OnboardingCoordinator(
 
         sessionMutex.withLock {
             if (!deviceReady) return@withLock
+            if (sessionMutable.value is ClientSessionState.AwaitingTenantSelection) return@withLock
 
             val current = clientSession
             if (current == null) {
@@ -189,6 +191,7 @@ class OnboardingCoordinator(
 
     suspend fun continueWithGoogle() {
         val reset = sessionMutex.withLock {
+            pendingTenantHint = clientSession?.tenantId ?: pendingTenantHint
             if (!clearStoredSession()) return@withLock false
             continuationGrant = null
             validatedIdentity = null
@@ -258,6 +261,49 @@ class OnboardingCoordinator(
             restoreOrEstablish(automatic = false)
         }
     }
+
+    suspend fun selectTenantForSession(targetTenantId: String): Boolean =
+        sessionMutex.withLock sessionLock@{
+            val target = targetTenantId.trim()
+            val pending =
+                sessionMutable.value as? ClientSessionState.AwaitingTenantSelection
+            val established =
+                (bootstrapMutable.value as? DeviceBootstrapState.Established)?.authority
+            if (
+                target.isEmpty() ||
+                target.length > 64 ||
+                pending == null ||
+                established == null ||
+                pending.memberships.none { it.tenantId == target } ||
+                established.memberships.none { it.tenantId == target }
+            ) {
+                emitSessionEvent(
+                    "CLIENT_SESSION_INITIAL_TENANT",
+                    "result" to "REJECTED",
+                )
+                return@sessionLock false
+            }
+
+            pendingTenantHint = target
+            emitSessionEvent(
+                "CLIENT_SESSION_INITIAL_TENANT",
+                "result" to "SELECTED",
+            )
+            establishFreshSession(
+                automatic = false,
+                requestedTenantIdOverride = target,
+                trigger = SessionRefreshTrigger.INITIAL_TENANT_SELECTION,
+            )
+            val connected =
+                sessionMutable.value as? ClientSessionState.Connected
+            val accepted =
+                connected?.bootstrap?.activeTenantId == target &&
+                    clientSession?.tenantId == target
+            if (accepted) {
+                pendingTenantHint = null
+            }
+            accepted
+        }
 
     suspend fun switchActiveTenant(targetTenantId: String): Boolean =
         sessionMutex.withLock sessionLock@{
@@ -570,6 +616,7 @@ class OnboardingCoordinator(
                 "has_session" to (clientSession != null).toString(),
             )
             if (sessionMutable.value is ClientSessionState.Connected) return@withLock
+            if (sessionMutable.value is ClientSessionState.AwaitingTenantSelection) return@withLock
 
             val current = clientSession
             if (current == null) {
@@ -620,6 +667,7 @@ class OnboardingCoordinator(
 
     suspend fun restartAuthentication() {
         val reset = sessionMutex.withLock {
+            pendingTenantHint = clientSession?.tenantId ?: pendingTenantHint
             if (!clearStoredSession()) return@withLock false
             clientSession = null
             transitionSession(ClientSessionState.Idle, "AUTH_RESTART")
@@ -683,10 +731,27 @@ class OnboardingCoordinator(
                     bootstrapMutable.value =
                         DeviceBootstrapState.Established(result.established)
                     sessionMutex.withLock {
-                        establishFreshSession(
-                            automatic = false,
-                            trigger = SessionRefreshTrigger.DEVICE_BOOTSTRAP,
-                        )
+                        val hintedTenantId = pendingTenantHint?.takeIf { hint ->
+                            result.established.memberships.any { it.tenantId == hint }
+                        }
+                        if (
+                            hintedTenantId == null &&
+                            result.established.initialTenantId == null &&
+                            result.established.memberships.size > 1
+                        ) {
+                            transitionSession(
+                                ClientSessionState.AwaitingTenantSelection(
+                                    result.established.memberships,
+                                ),
+                                "TENANT_SELECTION_REQUIRED",
+                            )
+                        } else {
+                            establishFreshSession(
+                                automatic = false,
+                                requestedTenantIdOverride = hintedTenantId,
+                                trigger = SessionRefreshTrigger.DEVICE_BOOTSTRAP,
+                            )
+                        }
                     }
                 }
             }
@@ -708,6 +773,7 @@ class OnboardingCoordinator(
             emitSessionEvent("CLIENT_SESSION_LOAD", "result" to "ABSENT")
             establishFreshSession(
                 automatic = automatic,
+                requestedTenantIdOverride = pendingTenantHint,
                 trigger = SessionRefreshTrigger.NO_STORED_SESSION,
             )
             return
@@ -931,6 +997,7 @@ class OnboardingCoordinator(
                         return SessionBootstrapOutcome.FAILURE
                     }
                     emitSessionEvent("CLIENT_SESSION_ACCEPTED", "persisted" to "true")
+                    pendingTenantHint = null
                     transitionSession(
                         ClientSessionState.Connected(bootstrap),
                         "BOOTSTRAP_ACCEPTED",
@@ -1058,6 +1125,7 @@ class OnboardingCoordinator(
         ClientSessionState.Restoring -> "RESTORING"
         ClientSessionState.Establishing -> "ESTABLISHING"
         ClientSessionState.LoadingBootstrap -> "LOADING_BOOTSTRAP"
+        is ClientSessionState.AwaitingTenantSelection -> "AWAITING_TENANT_SELECTION"
         is ClientSessionState.Connected -> "CONNECTED"
         is ClientSessionState.Failure -> "FAILURE"
     }
@@ -1198,6 +1266,7 @@ class OnboardingCoordinator(
         EXPIRED,
         EXPIRING,
         REJECTED,
+        INITIAL_TENANT_SELECTION,
         TENANT_SWITCH,
     }
 }

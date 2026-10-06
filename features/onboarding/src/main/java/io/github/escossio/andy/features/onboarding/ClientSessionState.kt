@@ -1,12 +1,16 @@
 package io.github.escossio.andy.features.onboarding
 
 import io.github.escossio.andy.sdk.clientapi.AuthenticatedClientBootstrap
+import io.github.escossio.andy.sdk.clientapi.ClientTenantMembership
 
 sealed interface ClientSessionState {
     data object Idle : ClientSessionState
     data object Restoring : ClientSessionState
     data object Establishing : ClientSessionState
     data object LoadingBootstrap : ClientSessionState
+    data class AwaitingTenantSelection(
+        val memberships: List<ClientTenantMembership>,
+    ) : ClientSessionState
     data class Connected(val bootstrap: AuthenticatedClientBootstrap) : ClientSessionState
     data class Failure(val reason: ClientSessionFailure) : ClientSessionState
 }
