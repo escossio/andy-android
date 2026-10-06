@@ -35,6 +35,16 @@ class SignedDebugWorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("secrets.", build)
         self.assertNotIn("ANDY_SIGNING_", build)
 
+    def test_candidate_build_requires_and_injects_public_configuration(self):
+        build, _ = self.sections()
+        self.assertIn("ATTENTION_ROUTER_BASE_URL: ${{ vars.ATTENTION_ROUTER_BASE_URL }}", build)
+        self.assertIn("GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}", build)
+        self.assertIn('test -n "${ATTENTION_ROUTER_BASE_URL//[[:space:]]/}"', build)
+        self.assertIn('test -n "${GOOGLE_WEB_CLIENT_ID//[[:space:]]/}"', build)
+        self.assertLess(build.index('test -n "${GOOGLE_WEB_CLIENT_ID'), build.index("./gradlew"))
+        self.assertIn('-PattentionRouterBaseUrl="$ATTENTION_ROUTER_BASE_URL"', build)
+        self.assertIn('-PgoogleWebClientId="$GOOGLE_WEB_CLIENT_ID"', build)
+
     def test_signing_job_never_executes_candidate_code(self):
         _, sign = self.sections()
         self.assertIn("needs: build-candidate", sign)

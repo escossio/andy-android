@@ -81,10 +81,15 @@ jobs:
           echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Build and test candidate without signing secrets
+        env:
+          ATTENTION_ROUTER_BASE_URL: ${{ vars.ATTENTION_ROUTER_BASE_URL }}
+          GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon             :app:testDebugUnitTest             :app:assembleDebug             -PandyVersionCode="${{ steps.version.outputs.code }}"             -PandyVersionName="${{ steps.version.outputs.name }}"
+          test -n "${ATTENTION_ROUTER_BASE_URL//[[:space:]]/}"
+          test -n "${GOOGLE_WEB_CLIENT_ID//[[:space:]]/}"
+          ./gradlew --no-daemon             :app:testDebugUnitTest             :app:assembleDebug             -PandyVersionCode="${{ steps.version.outputs.code }}"             -PandyVersionName="${{ steps.version.outputs.name }}"             -PattentionRouterBaseUrl="$ATTENTION_ROUTER_BASE_URL"             -PgoogleWebClientId="$GOOGLE_WEB_CLIENT_ID"
 
       - name: Verify candidate package identity
         env:
