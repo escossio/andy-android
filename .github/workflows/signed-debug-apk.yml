@@ -7,6 +7,11 @@ on:
         description: Exact 40-character commit SHA to build
         required: true
         type: string
+      publish_firebase:
+        description: Publish the signed APK to Firebase App Distribution
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -217,7 +222,7 @@ jobs:
   publish-firebase:
     name: publish-firebase-app-distribution
     needs: sign-candidate
-    if: ${{ github.actor == github.repository_owner }}
+    if: ${{ github.actor == github.repository_owner && inputs.publish_firebase }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
