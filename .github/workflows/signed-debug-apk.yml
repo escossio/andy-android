@@ -246,6 +246,7 @@ jobs:
           project_id: andy-android-a30c9
           workload_identity_provider: projects/410434637355/locations/global/workloadIdentityPools/github-andy-android/providers/signed-debug
           service_account: github-app-distribution@andy-android-a30c9.iam.gserviceaccount.com
+          token_format: access_token
 
       - name: Publish signed APK to Firebase App Distribution
         shell: bash

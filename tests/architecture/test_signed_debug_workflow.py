@@ -15,7 +15,7 @@ class SignedDebugWorkflowPolicyTests(unittest.TestCase):
     def sections(self) -> tuple[str, str]:
         text = self.workflow()
         build = text.split("  build-candidate:\n", 1)[1].split("  sign-candidate:\n", 1)[0]
-        sign = text.split("  sign-candidate:\n", 1)[1]
+        sign = text.split("  sign-candidate:\n", 1)[1].split("  publish-firebase:\n", 1)[0]
         return build, sign
 
     def test_build_versioning_frontier_is_exact(self):
