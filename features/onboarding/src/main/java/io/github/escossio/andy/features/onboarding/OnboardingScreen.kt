@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.escossio.andy.core.humanidentity.HumanIdentityState
 import io.github.escossio.andy.sdk.clientapi.ClientTenantRole
+import io.github.escossio.andy.sdk.clientapi.PersonalContextBootstrapConfirmResult
+import io.github.escossio.andy.sdk.clientapi.PersonalContextBootstrapSelectionResult
 
 @Composable
 fun OnboardingScreen(
@@ -52,6 +54,9 @@ fun OnboardingScreen(
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
     tenantDirectoryState: TenantDirectoryState,
+    personalContextSelection: PersonalContextBootstrapSelectionResult?,
+    personalContextConfirmation: PersonalContextBootstrapConfirmResult?,
+    personalContextBusy: Boolean,
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onContinue: () -> Unit,
@@ -64,6 +69,8 @@ fun OnboardingScreen(
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     onSwitchTenant: (String) -> Unit,
+    onRefreshPersonalContextSelection: () -> Unit,
+    onConfirmPersonalContextSelection: () -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -83,6 +90,9 @@ fun OnboardingScreen(
                 locationState = locationState,
                 gmailState = gmailState,
                 tenantDirectoryState = tenantDirectoryState,
+                personalContextSelection = personalContextSelection,
+                personalContextConfirmation = personalContextConfirmation,
+                personalContextBusy = personalContextBusy,
                 cameraPermissionGranted = cameraPermissionGranted,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onRetrySession = onRetrySession,
@@ -92,6 +102,8 @@ fun OnboardingScreen(
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
                 onSwitchTenant = onSwitchTenant,
+                onRefreshPersonalContextSelection = onRefreshPersonalContextSelection,
+                onConfirmPersonalContextSelection = onConfirmPersonalContextSelection,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
             )
@@ -251,6 +263,9 @@ private fun SessionContent(
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
     tenantDirectoryState: TenantDirectoryState,
+    personalContextSelection: PersonalContextBootstrapSelectionResult?,
+    personalContextConfirmation: PersonalContextBootstrapConfirmResult?,
+    personalContextBusy: Boolean,
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onRetrySession: () -> Unit,
@@ -260,6 +275,8 @@ private fun SessionContent(
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     onSwitchTenant: (String) -> Unit,
+    onRefreshPersonalContextSelection: () -> Unit,
+    onConfirmPersonalContextSelection: () -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -290,12 +307,17 @@ private fun SessionContent(
                 locationState = locationState,
                 gmailState = gmailState,
                 tenantDirectoryState = tenantDirectoryState,
+                personalContextSelection = personalContextSelection,
+                personalContextConfirmation = personalContextConfirmation,
+                personalContextBusy = personalContextBusy,
                 cameraPermissionGranted = cameraPermissionGranted,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onShareLocation = onShareLocation,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
                 onSwitchTenant = onSwitchTenant,
+                onRefreshPersonalContextSelection = onRefreshPersonalContextSelection,
+                onConfirmPersonalContextSelection = onConfirmPersonalContextSelection,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
             )
@@ -350,12 +372,17 @@ private fun ConnectedHome(
     locationState: ClientLocationState,
     gmailState: GmailConnectionState,
     tenantDirectoryState: TenantDirectoryState,
+    personalContextSelection: PersonalContextBootstrapSelectionResult?,
+    personalContextConfirmation: PersonalContextBootstrapConfirmResult?,
+    personalContextBusy: Boolean,
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onShareLocation: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     onSwitchTenant: (String) -> Unit,
+    onRefreshPersonalContextSelection: () -> Unit,
+    onConfirmPersonalContextSelection: () -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
 ) {
@@ -375,10 +402,66 @@ private fun ConnectedHome(
         onConnect = onConnectGmail,
         onDisconnect = onDisconnectGmail,
     )
+    PersonalContextBootstrapCard(
+        selectionResult = personalContextSelection,
+        confirmationResult = personalContextConfirmation,
+        busy = personalContextBusy,
+        onRefresh = onRefreshPersonalContextSelection,
+        onConfirm = onConfirmPersonalContextSelection,
+    )
     LocationCard(
         state = locationState,
         onShare = onShareLocation,
     )
+}
+
+@Composable
+private fun PersonalContextBootstrapCard(
+    selectionResult: PersonalContextBootstrapSelectionResult?,
+    confirmationResult: PersonalContextBootstrapConfirmResult?,
+    busy: Boolean,
+    onRefresh: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    SectionTitle("Importação de histórico")
+    SurfaceCard {
+        when (selectionResult) {
+            null -> AppText("Verificando seleção pendente…", 14, Muted)
+            is PersonalContextBootstrapSelectionResult.Failure -> {
+                AppText("Não foi possível verificar a seleção.", 14, Muted)
+                SecondaryButton("Verificar novamente", onRefresh)
+            }
+            is PersonalContextBootstrapSelectionResult.Success -> {
+                val selection = selectionResult.selection
+                if (selection == null) {
+                    AppText("Nenhuma importação pendente.", 14, Muted)
+                    SecondaryButton("Verificar novamente", onRefresh)
+                } else {
+                    AppText("5 conversas selecionadas", 16, Ink, FontWeight.SemiBold)
+                    selection.chats.forEach { chat ->
+                        AppText("#${chat.index} · ${chat.displayName}", 14, Ink)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    AppText(
+                        "Serão lidas mensagens antigas dessas conversas para contexto e memória histórica. Nenhuma mensagem será enviada.",
+                        14, Muted,
+                    )
+                    when (confirmationResult) {
+                        is PersonalContextBootstrapConfirmResult.Success ->
+                            AppText("Importação solicitada: ${confirmationResult.run.state}.", 14, Ink)
+                        is PersonalContextBootstrapConfirmResult.Failure ->
+                            AppText("A importação não foi iniciada. Verifique a sessão e tente novamente.", 14, Muted)
+                        null -> Unit
+                    }
+                    PrimaryButton(
+                        "Importar histórico selecionado",
+                        onConfirm,
+                        enabled = !busy && confirmationResult !is PersonalContextBootstrapConfirmResult.Success,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

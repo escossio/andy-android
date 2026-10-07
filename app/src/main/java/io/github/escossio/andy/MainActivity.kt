@@ -96,6 +96,9 @@ private fun AndyBootstrap(
     val tenantDirectoryState by coordinator.tenantDirectoryState.collectAsState()
     val approvalState by approvalCoordinator.state.collectAsState()
     val commandState by commandCoordinator.state.collectAsState()
+    val personalContextSelection by viewModel.personalContextSelection.collectAsState()
+    val personalContextConfirmation by viewModel.personalContextConfirmation.collectAsState()
+    val personalContextBusy by viewModel.personalContextBusy.collectAsState()
     val context = LocalContext.current
     var cameraPermissionGranted by remember {
         mutableStateOf(
@@ -124,13 +127,16 @@ private fun AndyBootstrap(
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
+            viewModel.clearPersonalContextSelection()
             coordinator.refreshTenantDirectory()
             coordinator.refreshGmailConnection()
             approvalCoordinator.refresh()
             commandCoordinator.refresh()
+            viewModel.refreshPersonalContextSelection()
         } else {
             approvalCoordinator.reset()
             commandCoordinator.reset()
+            viewModel.clearPersonalContextSelection()
         }
     }
 
@@ -155,6 +161,9 @@ private fun AndyBootstrap(
             locationState = locationState,
             gmailState = gmailState,
             tenantDirectoryState = tenantDirectoryState,
+            personalContextSelection = personalContextSelection,
+            personalContextConfirmation = personalContextConfirmation,
+            personalContextBusy = personalContextBusy,
             cameraPermissionGranted = cameraPermissionGranted,
             onRequestCameraPermission = {
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -193,6 +202,12 @@ private fun AndyBootstrap(
             },
             onSwitchTenant = { tenantId ->
                 scope.launch { coordinator.switchActiveTenant(tenantId) }
+            },
+            onRefreshPersonalContextSelection = {
+                scope.launch { viewModel.refreshPersonalContextSelection() }
+            },
+            onConfirmPersonalContextSelection = {
+                scope.launch { viewModel.confirmPersonalContextSelection() }
             },
             commandContent = {
                 CommandPanel(

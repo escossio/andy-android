@@ -33,6 +33,13 @@ import io.github.escossio.andy.sdk.clientapi.AttentionRouterClientSessionClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterDeviceBootstrapClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterHumanAuthClient
 import io.github.escossio.andy.sdk.clientapi.AttentionRouterGmailConnectionClient
+import io.github.escossio.andy.sdk.clientapi.AttentionRouterPersonalContextBootstrapClient
+import io.github.escossio.andy.sdk.clientapi.PersonalContextBootstrapClient
+import io.github.escossio.andy.sdk.clientapi.PersonalContextBootstrapConfirmResult
+import io.github.escossio.andy.sdk.clientapi.PersonalContextBootstrapError
+import io.github.escossio.andy.sdk.clientapi.PersonalContextBootstrapSelectionResult
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
+import java.time.Instant
 
 class AndySessionViewModel private constructor(
     context: Context,
@@ -54,6 +62,18 @@ class AndySessionViewModel private constructor(
     private val bootstrapIdentity = AndroidDeviceIdentityFactory.createBootstrapIdentity()
     private val locationProvider = AndroidForegroundLocationProvider(applicationContext)
     private val sessionStore = AndroidKeystoreClientSessionStore(applicationContext)
+    private val personalContextBootstrapClient: PersonalContextBootstrapClient =
+        AttentionRouterPersonalContextBootstrapClient(BuildConfig.ATTENTION_ROUTER_BASE_URL)
+    private val _personalContextSelection =
+        MutableStateFlow<PersonalContextBootstrapSelectionResult?>(null)
+    val personalContextSelection = _personalContextSelection.asStateFlow()
+    private val _personalContextConfirmation =
+        MutableStateFlow<PersonalContextBootstrapConfirmResult?>(null)
+    val personalContextConfirmation = _personalContextConfirmation.asStateFlow()
+    private val _personalContextBusy = MutableStateFlow(false)
+    val personalContextBusy = _personalContextBusy.asStateFlow()
+    private var personalContextSessionId: String? = null
+    private var personalContextEpoch = 0L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var foregroundSessionMaintenanceJob: Job? = null
 
@@ -146,6 +166,63 @@ class AndySessionViewModel private constructor(
     fun refreshCommandsIfConnected() {
         if (coordinator.sessionState.value is ClientSessionState.Connected) {
             scope.launch { commandCoordinator.refresh() }
+        }
+    }
+
+    suspend fun refreshPersonalContextSelection() {
+        if (coordinator.sessionState.value !is ClientSessionState.Connected) {
+            clearPersonalContextSelection()
+            return
+        }
+        val epoch = personalContextEpoch
+        val credential = sessionStore.load()
+        val result = personalContextBootstrapClient.pending(credential)
+        if (epoch != personalContextEpoch ||
+            coordinator.sessionState.value !is ClientSessionState.Connected ||
+            credential?.sessionId != sessionStore.load()?.sessionId
+        ) return
+        personalContextSessionId = credential?.sessionId
+        _personalContextSelection.value = result
+    }
+
+    fun clearPersonalContextSelection() {
+        personalContextEpoch++
+        personalContextSessionId = null
+        _personalContextSelection.value = null
+        _personalContextConfirmation.value = null
+        _personalContextBusy.value = false
+    }
+
+    suspend fun confirmPersonalContextSelection() {
+        if (_personalContextBusy.value) return
+        val selection = (
+            _personalContextSelection.value as? PersonalContextBootstrapSelectionResult.Success
+        )?.selection ?: return
+        val credential = sessionStore.load()
+        if (credential == null || credential.sessionId != personalContextSessionId) {
+            clearPersonalContextSelection()
+            return
+        }
+        if (coordinator.sessionState.value !is ClientSessionState.Connected ||
+            !selection.expiresAt.isAfter(Instant.now())
+        ) {
+            _personalContextConfirmation.value = PersonalContextBootstrapConfirmResult.Failure(
+                PersonalContextBootstrapError.BOOTSTRAP_SELECTION_EXPIRED,
+            )
+            return
+        }
+        _personalContextBusy.value = true
+        val epoch = personalContextEpoch
+        try {
+            val result = personalContextBootstrapClient.confirm(
+                credential, selection.selectionId,
+            )
+            if (epoch == personalContextEpoch &&
+                coordinator.sessionState.value is ClientSessionState.Connected &&
+                credential.sessionId == sessionStore.load()?.sessionId
+            ) _personalContextConfirmation.value = result
+        } finally {
+            _personalContextBusy.value = false
         }
     }
 
