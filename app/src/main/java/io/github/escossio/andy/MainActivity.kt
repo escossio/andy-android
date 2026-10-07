@@ -127,6 +127,7 @@ private fun AndyBootstrap(
 
     LaunchedEffect(sessionState) {
         if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
+            viewModel.clearPersonalContextSelection()
             coordinator.refreshTenantDirectory()
             coordinator.refreshGmailConnection()
             approvalCoordinator.refresh()

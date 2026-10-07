@@ -72,6 +72,8 @@ class AndySessionViewModel private constructor(
     val personalContextConfirmation = _personalContextConfirmation.asStateFlow()
     private val _personalContextBusy = MutableStateFlow(false)
     val personalContextBusy = _personalContextBusy.asStateFlow()
+    private var personalContextSessionId: String? = null
+    private var personalContextEpoch = 0L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var foregroundSessionMaintenanceJob: Job? = null
 
@@ -172,12 +174,20 @@ class AndySessionViewModel private constructor(
             clearPersonalContextSelection()
             return
         }
-        _personalContextSelection.value = personalContextBootstrapClient.pending(
-            sessionStore.load(),
-        )
+        val epoch = personalContextEpoch
+        val credential = sessionStore.load()
+        val result = personalContextBootstrapClient.pending(credential)
+        if (epoch != personalContextEpoch ||
+            coordinator.sessionState.value !is ClientSessionState.Connected ||
+            credential?.sessionId != sessionStore.load()?.sessionId
+        ) return
+        personalContextSessionId = credential?.sessionId
+        _personalContextSelection.value = result
     }
 
     fun clearPersonalContextSelection() {
+        personalContextEpoch++
+        personalContextSessionId = null
         _personalContextSelection.value = null
         _personalContextConfirmation.value = null
         _personalContextBusy.value = false
@@ -188,6 +198,11 @@ class AndySessionViewModel private constructor(
         val selection = (
             _personalContextSelection.value as? PersonalContextBootstrapSelectionResult.Success
         )?.selection ?: return
+        val credential = sessionStore.load()
+        if (credential == null || credential.sessionId != personalContextSessionId) {
+            clearPersonalContextSelection()
+            return
+        }
         if (coordinator.sessionState.value !is ClientSessionState.Connected ||
             !selection.expiresAt.isAfter(Instant.now())
         ) {
@@ -197,10 +212,15 @@ class AndySessionViewModel private constructor(
             return
         }
         _personalContextBusy.value = true
+        val epoch = personalContextEpoch
         try {
-            _personalContextConfirmation.value = personalContextBootstrapClient.confirm(
-                sessionStore.load(), selection.selectionId,
+            val result = personalContextBootstrapClient.confirm(
+                credential, selection.selectionId,
             )
+            if (epoch == personalContextEpoch &&
+                coordinator.sessionState.value is ClientSessionState.Connected &&
+                credential.sessionId == sessionStore.load()?.sessionId
+            ) _personalContextConfirmation.value = result
         } finally {
             _personalContextBusy.value = false
         }
