@@ -22,9 +22,34 @@ class PresenceReplayTest {
 
     @Test fun blinkClosesAndReopens() {
         assertEquals(1f, PresenceReplay.frame(PresenceInput(0, 0)).eyeOpenness)
-        assertEquals(0f, PresenceReplay.frame(PresenceInput(0, 100)).eyeOpenness)
-        assertEquals(1f, PresenceReplay.frame(PresenceInput(0, 200)).eyeOpenness)
-        assertEquals(0f, PresenceReplay.frame(PresenceInput(0, 4100)).eyeOpenness)
+        assertEquals(0f, PresenceReplay.frame(PresenceInput(0, 70)).eyeOpenness)
+        assertEquals(1f, PresenceReplay.frame(PresenceInput(0, 180)).eyeOpenness)
+        for (time in listOf(4_270L, 9_370L, 13_770L)) {
+            assertEquals(0f, PresenceReplay.frame(PresenceInput(0, time)).eyeOpenness)
+        }
+        assertEquals(1f, PresenceReplay.frame(PresenceInput(0, 4_100)).eyeOpenness)
+    }
+
+    @Test fun restPoseTransitionsAndCycleWrapsDoNotSnap() {
+        for (time in listOf(4_800L, 6_000L, 8_000L, 10_800L, 12_000L, 24_000L)) {
+            val before = PresenceReplay.frame(PresenceInput(elapsedMillis = time - 1))
+            val after = PresenceReplay.frame(PresenceInput(elapsedMillis = time))
+            assertEquals(before.torsoDegrees, after.torsoDegrees, 0.002f)
+            assertEquals(before.headDegrees, after.headDegrees, 0.002f)
+            assertEquals(before.jawDegrees, after.jawDegrees, 0.002f)
+        }
+    }
+
+    @Test fun idleMovementStaysSubtleAcrossSeedsAndLongReplay() {
+        for (seed in listOf(Long.MIN_VALUE, -1L, 0L, 7L, Long.MAX_VALUE)) {
+            for (time in 0L..60_000L step 37L) {
+                val frame = PresenceReplay.frame(PresenceInput(seed, time))
+                assertTrue(frame.torsoDegrees in -2.1f..2.3f)
+                assertTrue(frame.headDegrees in -3.1f..2.6f)
+                assertTrue(frame.jawDegrees in 0f..0.35f)
+                assertTrue(frame.eyeOpenness in 0f..1f)
+            }
+        }
     }
 
     @Test fun gazeAndJawAreSyntheticAndBounded() {
@@ -62,6 +87,23 @@ class PresenceReplayTest {
         val plum = PresenceReplay.frame(PresenceInput(elapsedMillis = 1700, clothing = PresenceClothing.PLUM))
         assertEquals(PresenceClothing.PLUM, plum.clothing)
         assertEquals(jade.copy(clothing = PresenceClothing.PLUM), plum)
+    }
+
+    @Test fun greetingHoldsTheHandInsideThePortraitPoseRange() {
+        for (age in 350L..2_050L step 17L) {
+            val frame = PresenceReplay.frame(PresenceInput(
+                elapsedMillis = 1_000L + age,
+                gestureStartedAtMillis = 1_000L,
+            ))
+            assertEquals(PresenceGesture.WAVING, frame.gesture)
+            assertTrue(frame.armDegrees in 140f..150f)
+        }
+        assertEquals(0f, PresenceReplay.frame(PresenceInput(
+            elapsedMillis = 1_000L, gestureStartedAtMillis = 1_000L,
+        )).armDegrees)
+        assertEquals(0f, PresenceReplay.frame(PresenceInput(
+            elapsedMillis = 3_400L, gestureStartedAtMillis = 1_000L,
+        )).armDegrees)
     }
 
     @Test(expected = IllegalArgumentException::class)

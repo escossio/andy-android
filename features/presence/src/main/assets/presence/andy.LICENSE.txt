@@ -1,15 +1,32 @@
-Andy Presence Stage V1 — synthetic character
+Andy Presence — original editorial bust, 2026-10
 
-This asset was created specifically for the escossio/andy-android repository
-from original synthetic geometry. It contains procedurally constructed meshes,
-materials, a named transform hierarchy and animation clips. No third-party
-character, texture, scan, photograph or real-person data was used.
+Original character geometry, materials, transform rig and animation data created
+specifically for escossio/andy-android. The design uses a sculpted continuous
+face, a static asymmetric swept bob, champagne accents and a tailored graphite
+jacket with Jade and Plum clothing insets. It is an adult stylized fictional
+character, not a likeness or scan of a real person.
+
+All shapes were authored from original surface profiles, curved patches and
+mathematical deformations. No third-party character, mesh, texture, scan,
+photograph, copyrighted character reference or real-person data was used.
+No image texture or external resource is required or referenced by andy.glb.
+The static hair mesh is part of the character; there is no hair simulation.
 
 Distributed under the Apache License, Version 2.0, together with this project.
 The full license is available in the repository root LICENSE file.
 SPDX-License-Identifier: Apache-2.0
 
-All geometry, materials and animation data are embedded in andy.glb.
-No external resources are required. Jade and Plum are local clothing variants.
-The transform hierarchy provides torso, head, jaw, eyes, synthetic gaze and
-an arm gesture; it is a rigid stylized rig, not a scanned or skinned human.
+The self-contained glTF 2.0 binary includes named Torso, Head, Jaw, Eyes, Gaze,
+WaveArm, Jade and Plum transform nodes. This is a rigid stylized rig, not a
+skinned or scanned human. Four local clips document Rest, Attentive, Blink
+and Greeting. The app continues to drive these nodes with deterministic
+visual values; clips do not introduce an independent animation clock.
+
+Artifact SHA-256:
+9c34943acac87903980cad3c470332cd51d429d977d6691236bf686f7d921201
+
+Validated with Khronos glTF Validator 2.0.0-dev.3.10: no errors, warnings,
+information messages or hints. Structural inspection also checked embedded
+buffer ranges, indices, unit normals, finite data, triangle area, the acyclic
+single-parent node hierarchy, animation times/quaternions and material ranges.
+This structural validation does not replace Android rendering/device testing.

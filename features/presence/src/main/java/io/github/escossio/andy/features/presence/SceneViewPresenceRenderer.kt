@@ -116,8 +116,10 @@ fun PresenceStage(
                 val rig = model.nodes.associateBy { it.name }
                 val required = setOf("Torso", "Head", "Jaw", "Eyes", "Gaze", "WaveArm", "Jade", "Plum")
                 check(rig.keys.containsAll(required)) { "Incomplete visual rig" }
-                view.cameraNode.position = Position(0f, 0.15f, 3.8f)
-                view.mainLightNode?.lightDirection = Direction(-0.4f, -0.6f, -1f)
+                // Portrait framing for the authored bust; keep the face legible in a compact Home.
+                view.cameraNode.focalLength = 45.0
+                view.cameraNode.position = Position(0f, 0.45f, 3.3f)
+                view.mainLightNode?.lightDirection = Direction(-0.35f, -0.45f, -1f)
                 view.childNodes = listOf(model)
                 view.onFrame = {
                     val frame = currentFrame
