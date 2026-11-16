@@ -11,7 +11,6 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.SystemClock
 import io.github.escossio.andy.core.deviceidentity.DeviceBootstrapPublicKeyResult
 import io.github.escossio.andy.core.deviceidentity.DeviceBootstrapSignatureResult
 import io.github.escossio.andy.data.clientsession.AndroidKeystoreClientSessionStore
@@ -47,6 +46,7 @@ import java.time.Instant
 class LocationContextTrackingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var collector: Job? = null
+    private var consentedContext: LocationContextScope? = null
     private val store by lazy { AndroidKeystoreClientSessionStore(applicationContext) }
     private val provider by lazy { AndroidForegroundLocationProvider(applicationContext) }
     private val locationClient by lazy {
@@ -68,6 +68,16 @@ class LocationContextTrackingService : Service() {
             return START_NOT_STICKY
         }
         if (collector?.isActive == true) return START_NOT_STICKY
+        val chosen = LocationContextScope(
+            humanIdentityId = intent.getStringExtra(EXTRA_CONSENTED_HUMAN) ?: "",
+            deviceId = intent.getStringExtra(EXTRA_CONSENTED_DEVICE) ?: "",
+            tenantId = intent.getStringExtra(EXTRA_CONSENTED_TENANT) ?: "",
+        )
+        if (!chosen.isValid()) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        consentedContext = chosen
         try {
             startVisibleForeground()
         } catch (_: SecurityException) {
@@ -92,8 +102,24 @@ class LocationContextTrackingService : Service() {
                     stopSelf()
                     break
                 }
+                val identityScope = LocationContextScope(
+                    humanIdentityId = credential.humanIdentityId,
+                    deviceId = credential.deviceId,
+                    tenantId = credential.tenantId,
+                )
+                if (consentedContext != identityScope) {
+                    // Consent is tied to an exact tenant/device/person.
+                    // A tenant switch cannot silently transfer tracking.
+                    stopSelf()
+                    break
+                }
                 val current = renewIfNecessary(credential)
-                if (current == null) {
+                if (current == null || LocationContextScope(
+                        humanIdentityId = current.humanIdentityId,
+                        deviceId = current.deviceId,
+                        tenantId = current.tenantId,
+                    ) != consentedContext
+                ) {
                     stopSelf()
                     break
                 }
@@ -245,6 +271,7 @@ class LocationContextTrackingService : Service() {
     override fun onDestroy() {
         prefs().edit().putBoolean(KEY_RUNNING, false).apply()
         collector?.cancel()
+        consentedContext = null
         scope.cancel()
         super.onDestroy()
     }
@@ -258,6 +285,9 @@ class LocationContextTrackingService : Service() {
         private const val KEY_RUNNING = "user_enabled"
         const val ACTION_START = "io.github.escossio.andy.location.START"
         const val ACTION_STOP = "io.github.escossio.andy.location.STOP"
+        const val EXTRA_CONSENTED_HUMAN = "consented_human_identity_id"
+        const val EXTRA_CONSENTED_DEVICE = "consented_device_id"
+        const val EXTRA_CONSENTED_TENANT = "consented_tenant_id"
 
         fun isEnabled(context: android.content.Context): Boolean =
             context.getSharedPreferences(PREFERENCES, MODE_PRIVATE)

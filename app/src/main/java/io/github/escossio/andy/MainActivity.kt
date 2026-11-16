@@ -109,6 +109,9 @@ private fun AndyBootstrap(
     var locationContextTrackingEnabled by remember {
         mutableStateOf(LocationContextTrackingService.isEnabled(context))
     }
+    var pendingLocationConsentScope by remember {
+        mutableStateOf<LocationContextScope?>(null)
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -160,11 +163,24 @@ private fun AndyBootstrap(
             grants[Manifest.permission.POST_NOTIFICATIONS] == true ||
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
-        if (locationOk && notificationsOk &&
-            coordinator.sessionState.value is ClientSessionState.Connected
+        val selected = pendingLocationConsentScope
+        pendingLocationConsentScope = null
+        val active = (coordinator.sessionState.value as? ClientSessionState.Connected)
+            ?.bootstrap?.let {
+                LocationContextScope(
+                    humanIdentityId = it.humanIdentityId,
+                    deviceId = it.device.deviceId,
+                    tenantId = it.activeTenantId,
+                )
+            }
+        if (locationOk && notificationsOk && selected?.isValid() == true &&
+            active == selected
         ) {
             val intent = Intent(context, LocationContextTrackingService::class.java)
                 .setAction(LocationContextTrackingService.ACTION_START)
+                .putExtra(LocationContextTrackingService.EXTRA_CONSENTED_HUMAN, selected.humanIdentityId)
+                .putExtra(LocationContextTrackingService.EXTRA_CONSENTED_DEVICE, selected.deviceId)
+                .putExtra(LocationContextTrackingService.EXTRA_CONSENTED_TENANT, selected.tenantId)
             try {
                 context.startForegroundService(intent)
                 locationContextTrackingEnabled = true
@@ -172,6 +188,14 @@ private fun AndyBootstrap(
                 locationContextTrackingEnabled = false
             }
         }
+    }
+
+    fun stopTrackingForAuthorityChange() {
+        pendingLocationConsentScope = null
+        val stop = Intent(context, LocationContextTrackingService::class.java)
+            .setAction(LocationContextTrackingService.ACTION_STOP)
+        context.startService(stop)
+        locationContextTrackingEnabled = false
     }
 
     Box(
@@ -196,6 +220,7 @@ private fun AndyBootstrap(
                 scope.launch { coordinator.continueWithExistingDevice() }
             },
             onRetryHuman = {
+                stopTrackingForAuthorityChange()
                 scope.launch { coordinator.restartAuthentication() }
             },
             onRetryBootstrap = {
@@ -205,6 +230,7 @@ private fun AndyBootstrap(
                 scope.launch { coordinator.retryClientSession() }
             },
             onSelectTenant = { tenantId ->
+                stopTrackingForAuthorityChange()
                 scope.launch { coordinator.selectTenantForSession(tenantId) }
             },
             onShareLocation = {
@@ -224,6 +250,19 @@ private fun AndyBootstrap(
                     context.startService(stop)
                     locationContextTrackingEnabled = false
                 } else {
+                    val active = (coordinator.sessionState.value as? ClientSessionState.Connected)
+                        ?.bootstrap
+                    pendingLocationConsentScope = active?.let {
+                        LocationContextScope(
+                            humanIdentityId = it.humanIdentityId,
+                            deviceId = it.device.deviceId,
+                            tenantId = it.activeTenantId,
+                        )
+                    }
+                    if (pendingLocationConsentScope == null) {
+                        locationContextTrackingEnabled = false
+                        return@OnboardingScreen
+                    }
                     val required = mutableListOf(
                         Manifest.permission.ACCESS_FINE_LOCATION,
                         Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -241,6 +280,7 @@ private fun AndyBootstrap(
                 scope.launch { coordinator.disconnectGmail() }
             },
             onSwitchTenant = { tenantId ->
+                stopTrackingForAuthorityChange()
                 scope.launch { coordinator.switchActiveTenant(tenantId) }
             },
             commandContent = {
