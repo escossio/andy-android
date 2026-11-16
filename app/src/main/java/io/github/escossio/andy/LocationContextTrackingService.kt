@@ -127,9 +127,24 @@ class LocationContextTrackingService : Service() {
                     LocationContextCollectionPolicy.POSITION_TIMEOUT_MILLIS
                 )) {
                     is ForegroundLocationResult.Success -> {
+                        // Location acquisition can take several seconds.
+                        // Re-read the Keystore session immediately before
+                        // the network call: an intervening tenant/person
+                        // switch must not publish the GPS point under the
+                        // previous context.
+                        val latest = store.load()
+                        if (latest == null || LocationContextScope(
+                                humanIdentityId = latest.humanIdentityId,
+                                deviceId = latest.deviceId,
+                                tenantId = latest.tenantId,
+                            ) != consentedContext
+                        ) {
+                            stopSelf()
+                            break
+                        }
                         val point = result.snapshot
                         val delivered = locationClient.putContextObservation(
-                            current,
+                            latest,
                             ClientLocationObservation(
                                 latitude = point.latitude,
                                 longitude = point.longitude,
