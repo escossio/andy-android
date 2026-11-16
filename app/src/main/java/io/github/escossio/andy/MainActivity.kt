@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,6 +28,7 @@ import io.github.escossio.andy.features.approvals.ApprovalPanel
 import io.github.escossio.andy.features.command.CommandExportPayload
 import io.github.escossio.andy.features.command.CommandPanel
 import io.github.escossio.andy.features.onboarding.ClientLocationFailure
+import io.github.escossio.andy.features.onboarding.ClientSessionState
 import io.github.escossio.andy.features.onboarding.OnboardingCoordinator
 import io.github.escossio.andy.features.onboarding.OnboardingScreen
 import io.github.escossio.andy.sdk.clientapi.ClientApprovalDecision
@@ -104,6 +106,9 @@ private fun AndyBootstrap(
         )
     }
     var cameraPrompted by remember { mutableStateOf(false) }
+    var locationContextTrackingEnabled by remember {
+        mutableStateOf(LocationContextTrackingService.isEnabled(context))
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -141,6 +146,31 @@ private fun AndyBootstrap(
             scope.launch { viewModel.shareCurrentLocation() }
         } else {
             coordinator.failLocation(ClientLocationFailure.PERMISSION_DENIED)
+        }
+    }
+
+    val trackingPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        val locationOk =
+            grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        val notificationsOk =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            grants[Manifest.permission.POST_NOTIFICATIONS] == true ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        if (locationOk && notificationsOk &&
+            coordinator.sessionState.value is ClientSessionState.Connected
+        ) {
+            val intent = Intent(context, LocationContextTrackingService::class.java)
+                .setAction(LocationContextTrackingService.ACTION_START)
+            try {
+                context.startForegroundService(intent)
+                locationContextTrackingEnabled = true
+            } catch (_: Exception) {
+                locationContextTrackingEnabled = false
+            }
         }
     }
 
@@ -184,6 +214,25 @@ private fun AndyBootstrap(
                         Manifest.permission.ACCESS_COARSE_LOCATION,
                     ),
                 )
+            },
+            locationContextTrackingEnabled = locationContextTrackingEnabled,
+            onToggleLocationContextTracking = {
+                if (locationContextTrackingEnabled) {
+                    val stop = Intent(
+                        context, LocationContextTrackingService::class.java,
+                    ).setAction(LocationContextTrackingService.ACTION_STOP)
+                    context.startService(stop)
+                    locationContextTrackingEnabled = false
+                } else {
+                    val required = mutableListOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        required.add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    trackingPermissionLauncher.launch(required.toTypedArray())
+                }
             },
             onConnectGmail = {
                 scope.launch { coordinator.connectGmail() }

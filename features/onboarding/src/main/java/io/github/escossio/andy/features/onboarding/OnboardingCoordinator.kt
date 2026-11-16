@@ -1205,6 +1205,7 @@ class OnboardingCoordinator(
     private fun ClientLocationErrorCode.locationFailure() = when (this) {
         ClientLocationErrorCode.NETWORK_FAILURE -> ClientLocationFailure.NETWORK_FAILURE
         ClientLocationErrorCode.CLIENT_LOCATION_DISABLED -> ClientLocationFailure.CLIENT_LOCATION_DISABLED
+        ClientLocationErrorCode.CLIENT_LOCATION_HISTORY_DISABLED -> ClientLocationFailure.CLIENT_LOCATION_DISABLED
         ClientLocationErrorCode.CLIENT_LOCATION_INVALID -> ClientLocationFailure.CLIENT_LOCATION_INVALID
         ClientLocationErrorCode.CLIENT_LOCATION_STALE -> ClientLocationFailure.CLIENT_LOCATION_STALE
         ClientLocationErrorCode.CLIENT_LOCATION_FUTURE -> ClientLocationFailure.CLIENT_LOCATION_FUTURE
