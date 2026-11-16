@@ -40,6 +40,7 @@ data class ClientLocationSnapshot(
 enum class ClientLocationErrorCode {
     NETWORK_FAILURE,
     CLIENT_LOCATION_DISABLED,
+    CLIENT_LOCATION_HISTORY_DISABLED,
     CLIENT_LOCATION_INVALID,
     CLIENT_LOCATION_STALE,
     CLIENT_LOCATION_FUTURE,
@@ -62,6 +63,15 @@ interface ClientLocationClient {
     ): ClientLocationResult
 
     suspend fun getCurrent(session: ClientSessionCredential): ClientLocationResult
+
+    // Separate explicit consent: sharing current position alone cannot
+    // silently activate chronological tracking.
+    suspend fun putContextObservation(
+        session: ClientSessionCredential,
+        observation: ClientLocationObservation,
+    ): ClientLocationResult = ClientLocationResult.Failure(
+        ClientLocationErrorCode.CLIENT_LOCATION_HISTORY_DISABLED,
+    )
 }
 
 class AttentionRouterClientLocationClient(
@@ -94,6 +104,33 @@ class AttentionRouterClientLocationClient(
         return request(session, "PUT", body)
     }
 
+    override suspend fun putContextObservation(
+        session: ClientSessionCredential,
+        observation: ClientLocationObservation,
+    ): ClientLocationResult {
+        if (
+            !observation.latitude.isFinite() || observation.latitude !in -90.0..90.0 ||
+            !observation.longitude.isFinite() || observation.longitude !in -180.0..180.0 ||
+            !observation.accuracyM.isFinite() || observation.accuracyM <= 0.0 ||
+            observation.accuracyM > 10_000.0 ||
+            observation.precision !in setOf(null, "PRECISE", "APPROXIMATE")
+        ) {
+            return ClientLocationResult.Failure(ClientLocationErrorCode.CLIENT_LOCATION_INVALID)
+        }
+        val body = buildJsonObject {
+            put("latitude", observation.latitude)
+            put("longitude", observation.longitude)
+            put("accuracy_m", observation.accuracyM)
+            put("captured_at", observation.capturedAt.toString())
+            observation.precision?.let { put("precision", it) }
+            put("context_history_opt_in", true)
+        }.toString()
+        return request(
+            session, "PUT", body,
+            path = "/api/v1/client/location/context/observations",
+        )
+    }
+
     override suspend fun getCurrent(
         session: ClientSessionCredential,
     ): ClientLocationResult = request(session, "GET", null)
@@ -102,11 +139,12 @@ class AttentionRouterClientLocationClient(
         session: ClientSessionCredential,
         method: String,
         body: String?,
+        path: String = "/api/v1/client/location/current",
     ): ClientLocationResult = try {
         session.withToken { token ->
             withContext(Dispatchers.IO) {
                 val builder = Request.Builder()
-                    .url("$root/api/v1/client/location/current")
+                    .url("$root$path")
                     .header("Authorization", "Bearer $token")
                 if (method == "PUT") {
                     builder.put(

@@ -61,6 +61,8 @@ fun OnboardingScreen(
     onRetrySession: () -> Unit,
     onSelectTenant: (String) -> Unit,
     onShareLocation: () -> Unit,
+    locationContextTrackingEnabled: Boolean,
+    onToggleLocationContextTracking: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     onSwitchTenant: (String) -> Unit,
@@ -89,6 +91,8 @@ fun OnboardingScreen(
                 onSelectTenant = onSelectTenant,
                 onRestartHuman = onRetryHuman,
                 onShareLocation = onShareLocation,
+                locationContextTrackingEnabled = locationContextTrackingEnabled,
+                onToggleLocationContextTracking = onToggleLocationContextTracking,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
                 onSwitchTenant = onSwitchTenant,
@@ -257,6 +261,8 @@ private fun SessionContent(
     onSelectTenant: (String) -> Unit,
     onRestartHuman: () -> Unit,
     onShareLocation: () -> Unit,
+    locationContextTrackingEnabled: Boolean,
+    onToggleLocationContextTracking: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     onSwitchTenant: (String) -> Unit,
@@ -293,6 +299,8 @@ private fun SessionContent(
                 cameraPermissionGranted = cameraPermissionGranted,
                 onRequestCameraPermission = onRequestCameraPermission,
                 onShareLocation = onShareLocation,
+                locationContextTrackingEnabled = locationContextTrackingEnabled,
+                onToggleLocationContextTracking = onToggleLocationContextTracking,
                 onConnectGmail = onConnectGmail,
                 onDisconnectGmail = onDisconnectGmail,
                 onSwitchTenant = onSwitchTenant,
@@ -353,6 +361,8 @@ private fun ConnectedHome(
     cameraPermissionGranted: Boolean,
     onRequestCameraPermission: () -> Unit,
     onShareLocation: () -> Unit,
+    locationContextTrackingEnabled: Boolean,
+    onToggleLocationContextTracking: () -> Unit,
     onConnectGmail: () -> Unit,
     onDisconnectGmail: () -> Unit,
     onSwitchTenant: (String) -> Unit,
@@ -378,6 +388,8 @@ private fun ConnectedHome(
     LocationCard(
         state = locationState,
         onShare = onShareLocation,
+        isTracking = locationContextTrackingEnabled,
+        onToggleTracking = onToggleLocationContextTracking,
     )
 }
 
@@ -609,6 +621,8 @@ private fun GmailCard(
 private fun LocationCard(
     state: ClientLocationState,
     onShare: () -> Unit,
+    isTracking: Boolean,
+    onToggleTracking: () -> Unit,
 ) {
     SurfaceCard {
         AppText(
@@ -639,6 +653,22 @@ private fun LocationCard(
             onClick = onShare,
             enabled = state !is ClientLocationState.Acquiring &&
                 state !is ClientLocationState.Sharing,
+        )
+        Spacer(Modifier.height(12.dp))
+        ServiceStatus(
+            if (isTracking)
+                "Registro de contexto ATIVO. Seu celular envia pontos de GPS " +
+                    "aproximadamente a cada minuto, com aviso persistente."
+            else
+                "Para correlacionar mensagens com o local onde o celular estava, " +
+                    "ative o registro contínuo. É opcional e pode ser interrompido.",
+            if (isTracking) Accent else Muted,
+        )
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton(
+            text = if (isTracking) "Parar registro de localização"
+            else "Ativar localização para contexto",
+            onClick = onToggleTracking,
         )
     }
 }
