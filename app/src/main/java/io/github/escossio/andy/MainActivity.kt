@@ -93,6 +93,7 @@ private fun AndyBootstrap(
     val sessionState by coordinator.sessionState.collectAsState()
     val locationState by coordinator.locationState.collectAsState()
     val gmailState by coordinator.gmailState.collectAsState()
+    val contactsState by coordinator.contacts.state.collectAsState()
     val tenantDirectoryState by coordinator.tenantDirectoryState.collectAsState()
     val approvalState by approvalCoordinator.state.collectAsState()
     val commandState by commandCoordinator.state.collectAsState()
@@ -134,6 +135,15 @@ private fun AndyBootstrap(
         }
     }
 
+    LaunchedEffect(sessionState) {
+        if (sessionState is io.github.escossio.andy.features.onboarding.ClientSessionState.Connected) {
+            while (true) {
+                coordinator.contacts.refresh()
+                kotlinx.coroutines.delay(30_000)
+            }
+        } else coordinator.contacts.reset()
+    }
+
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
@@ -154,6 +164,14 @@ private fun AndyBootstrap(
             sessionState = sessionState,
             locationState = locationState,
             gmailState = gmailState,
+            contactsContent = {
+                io.github.escossio.andy.features.onboarding.ContactsCard(
+                    state = contactsState,
+                    onConnect = { scope.launch { coordinator.contacts.connect() } },
+                    onDisconnect = { scope.launch { coordinator.contacts.disconnect() } },
+                    onSync = { scope.launch { coordinator.contacts.sync() } },
+                )
+            },
             tenantDirectoryState = tenantDirectoryState,
             cameraPermissionGranted = cameraPermissionGranted,
             onRequestCameraPermission = {

@@ -66,6 +66,7 @@ fun OnboardingScreen(
     onSwitchTenant: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
+    contactsContent: @Composable () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -94,6 +95,7 @@ fun OnboardingScreen(
                 onSwitchTenant = onSwitchTenant,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
+                contactsContent = contactsContent,
             )
         } else {
             HumanIdentityContent(
@@ -262,6 +264,7 @@ private fun SessionContent(
     onSwitchTenant: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
+    contactsContent: @Composable () -> Unit = {},
 ) {
     when (sessionState) {
         ClientSessionState.Idle -> Unit
@@ -298,6 +301,7 @@ private fun SessionContent(
                 onSwitchTenant = onSwitchTenant,
                 commandContent = commandContent,
                 approvalContent = approvalContent,
+                contactsContent = contactsContent,
             )
         is ClientSessionState.Failure -> {
             MessageCard(
@@ -358,6 +362,7 @@ private fun ConnectedHome(
     onSwitchTenant: (String) -> Unit,
     commandContent: @Composable () -> Unit,
     approvalContent: @Composable () -> Unit,
+    contactsContent: @Composable () -> Unit = {},
 ) {
     VisualPresence()
     commandContent()
@@ -370,6 +375,7 @@ private fun ConnectedHome(
     )
 
     SectionTitle("Serviços")
+    contactsContent()
     GmailCard(
         state = gmailState,
         onConnect = onConnectGmail,

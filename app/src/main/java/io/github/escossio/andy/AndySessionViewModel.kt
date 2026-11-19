@@ -93,6 +93,9 @@ class AndySessionViewModel private constructor(
             BuildConfig.ATTENTION_ROUTER_BASE_URL,
         ),
         gmailAuthorization = authorizationBridge,
+        contactsClient = io.github.escossio.andy.sdk.clientapi.AttentionRouterContactsClient(
+            BuildConfig.ATTENTION_ROUTER_BASE_URL,
+        ),
         devicePublicKeySpki = {
             when (val result = bootstrapIdentity.publicKey()) {
                 is DeviceBootstrapPublicKeyResult.Ready ->

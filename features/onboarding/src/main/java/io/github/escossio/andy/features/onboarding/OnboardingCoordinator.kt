@@ -71,6 +71,7 @@ class OnboardingCoordinator(
     private val sessionClient: ClientSessionClient,
     private val locationClient: ClientLocationClient? = null,
     private val gmailClient: GmailConnectionClient? = null,
+    private val contactsClient: io.github.escossio.andy.sdk.clientapi.ContactsClient? = null,
     private val gmailAuthorization: GoogleAuthorizationAcquirer? = null,
     private val devicePublicKeySpki: () -> String?,
     private val signDeviceChallenge: (String) -> String?,
@@ -112,6 +113,10 @@ class OnboardingCoordinator(
     private val sessionMutex = Mutex()
     private val gmailMutex = Mutex()
     private val tenantDirectoryMutex = Mutex()
+
+    val contacts = ContactsCoordinator(contactsClient, gmailAuthorization) {
+        clientSession?.takeIf { sessionMutable.value is ClientSessionState.Connected }
+    }
 
     fun takeContinuationGrant(): HumanAuthContinuationGrant? {
         val grant = continuationGrant
