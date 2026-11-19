@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "frontier_id": "android-google-contacts-reconcile-v1",
+  "branch": "feat/android-google-contacts-reconcile-v1",
+  "allowed_paths": [
+    "app/src/main/java/io/github/escossio/andy/AndySessionViewModel.kt",
+    "app/src/main/java/io/github/escossio/andy/MainActivity.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ContactsCard.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ContactsCoordinator.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingCoordinator.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/OnboardingScreen.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/ContactsCoordinatorTest.kt",
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterContactsClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterContactsClientTest.kt"
+  ],
+  "required_artifacts": [
+    "sdk/client-api/src/main/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterContactsClient.kt",
+    "sdk/client-api/src/test/kotlin/io/github/escossio/andy/sdk/clientapi/AttentionRouterContactsClientTest.kt",
+    "features/onboarding/src/main/java/io/github/escossio/andy/features/onboarding/ContactsCoordinator.kt",
+    "features/onboarding/src/test/java/io/github/escossio/andy/features/onboarding/ContactsCoordinatorTest.kt"
+  ],
+  "forbidden_content_patterns": [
+    "android\\.permission\\.READ_CONTACTS",
+    "gmail\\.readonly",
+    "gmail\\.modify",
+    "gmail\\.send",
+    "forceCodeForRefreshToken",
+    "getAccessToken\\("
+  ]
+}
